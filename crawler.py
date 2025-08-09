@@ -5,10 +5,10 @@ import os
 import urllib.parse
 import logging
 
-# 导入设置管理器
+# 设置管理
 from settings_manager import get_active_source_config
 
-# 设置日志记录
+# 日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -23,17 +23,17 @@ def ensure_settings_file_exists():
 
 def search_song(song_name, max_results=20):
     """搜索歌曲并返回结果数据"""
-    # 确保设置文件存在
+    # 确保文件存在
     ensure_settings_file_exists()
     
-    # 获取当前激活的音源配置
+    # 获取激活音源配置
     config = get_active_source_config()
     
-    # 准备请求参数
+    # 请求参数
     headers = config.get("headers", {})
     params = config.get("params", {}).copy()
     
-    # 替换查询参数中的占位符
+    # 替换占位符
     for key, value in params.items():
         if isinstance(value, str) and "{query}" in value:
             params[key] = value.replace("{query}", song_name)
@@ -44,7 +44,7 @@ def search_song(song_name, max_results=20):
         if "Authorization" in headers:
             headers["Authorization"] = f"Bearer {api_key}"
         else:
-            # 如果API需要密钥但没有指定头部，添加到参数中
+            # 参数
             params["api_key"] = api_key
     
     try:
@@ -58,11 +58,11 @@ def search_song(song_name, max_results=20):
         logger.info(f"请求头: {headers}")
         
         if method == "GET":
-            # 对于GET请求，将参数编码到URL中
+            # GET参数编码到URL
             url = url + "?" + urllib.parse.urlencode(params)
             response = requests.get(url, headers=headers, timeout=30)
         else:
-            # 对于POST请求，发送表单数据
+            # POST表单
             response = requests.post(url, data=params, headers=headers, timeout=30)
         
         response.raise_for_status()
@@ -71,28 +71,28 @@ def search_song(song_name, max_results=20):
             try:
                 json_data = response.json()
                 
-                # 确保数据是字典类型
+                # 字典
                 if not isinstance(json_data, dict):
-                    # 如果返回的是列表，转换为字典格式
+                    # 列表转换为字典
                     if isinstance(json_data, list):
                         json_data = {"data": json_data}
                     else:
-                        # 处理其他类型的数据
+                        # 其他类型
                         json_data = {"data": []}
                 
-                # 确保有"data"键
+                # "data"键
                 if "data" not in json_data:
                     json_data["data"] = []
                 
-                # 确保data是列表
+                # data列表
                 if not isinstance(json_data["data"], list):
                     json_data["data"] = []
                 
-                # 限制返回结果数量
+                # 限制结果数量
                 if len(json_data["data"]) > max_results:
                     json_data["data"] = json_data["data"][:max_results]
                 
-                # 保存搜索结果（用于调试）
+                # 保存结果
                 current_dir = os.path.dirname(os.path.abspath(__file__))
                 file_path = os.path.join(current_dir, 'songs_data.json')
                 try:
@@ -130,7 +130,7 @@ if __name__ == "__main__":
     
     # 默认搜索
     result = search_song(song_name)
-    # 确保有"data"键
+    # "data"键
     songs = result.get("data", [])
     for song in songs:
         print(f"歌曲名称: {song.get('title', '未知')}")

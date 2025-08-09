@@ -32,7 +32,7 @@ logger = logging.getLogger("MusicApp")
 FONT_PATH = "simhei.ttf"  # 确保有这个字体文件
 
 class NetEaseMusicAPI:
-    """音乐捕捉器create by:228117384"""
+    """音乐捕捉器create bilibili by:Railgun_lover"""
     
     def __init__(self):
         self.header = {
@@ -278,7 +278,7 @@ class MusicPlayerApp(QMainWindow):
         
     def init_ui(self):
         """初始化用户界面"""
-        self.setWindowTitle("音乐捕捉器create QQby:228117384")
+        self.setWindowTitle("音乐捕捉器create bilibili by:Railgun_lover")
         self.setGeometry(100, 100, 1000, 800)
         
         # 创建主部件和布局

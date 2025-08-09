@@ -42,7 +42,7 @@ def load_default_settings():
             "max_results": 20,
             "auto_play": True
         },
-        "background_image": ""  # 添加背景图片路径
+        "background_image": ""  
     }
 
 def load_settings():
