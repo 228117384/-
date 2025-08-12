@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap, QImage, QFont, QPalette, QColor
 
-# 配置日志
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -28,8 +28,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("MusicApp")
 
-# 设置字体文件路径
-FONT_PATH = "simhei.ttf"  # 确保有这个字体文件
+
+FONT_PATH = "simhei.ttf"  
 
 class NetEaseMusicAPI:
     """音乐捕捉器create bilibili by:Railgun_lover"""
@@ -133,9 +133,9 @@ class NetEaseMusicAPI:
             song = result["songs"][0]
             logger.info(f"获取到歌曲额外信息: {song.get('name')}")
             
-            # 获取专辑封面
+            
             cover_url = song["al"]["picUrl"]
-            # 获取播放链接
+            
             audio_url = f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
             
             return {
@@ -152,7 +152,7 @@ class NetEaseMusicAPI:
         """下载歌曲文件"""
         logger.info(f"开始下载歌曲: {file_path}")
         try:
-            # 设置请求头模拟浏览器
+            
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
                 "Referer": "https://music.163.com/",
@@ -172,9 +172,9 @@ class NetEaseMusicAPI:
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
-                        # 计算下载进度百分比
+                        
                         progress = int(100 * downloaded / total_size) if total_size > 0 else 0
-                        # 发送进度信号
+                        
                         self.download_progress.emit(progress)
             
             logger.info(f"歌曲下载完成: {file_path}")
@@ -192,8 +192,8 @@ class MusicWorker(QThread):
     comments_ready = pyqtSignal(str)
     lyrics_ready = pyqtSignal(bytes)
     error_occurred = pyqtSignal(str)
-    download_progress = pyqtSignal(int)  # 下载进度信号
-    download_finished = pyqtSignal(str)  # 下载完成信号
+    download_progress = pyqtSignal(int)  
+    download_finished = pyqtSignal(str)  
     
     def __init__(self, api):
         super().__init__()
@@ -231,11 +231,11 @@ class MusicWorker(QThread):
                 self.search_finished.emit(songs)
                 
             elif self.mode == "details":
-                # 获取歌曲详情
+                
                 song_info = self.api.fetch_extra(self.song["id"])
                 self.song_info_ready.emit(song_info)
                 
-                # 获取评论
+                
                 comments = self.api.fetch_comments(self.song["id"])
                 if comments:
                     comment = random.choice(comments)["content"]
@@ -243,13 +243,13 @@ class MusicWorker(QThread):
                 else:
                     self.comments_ready.emit("暂无热评")
                 
-                # 获取歌词
+                
                 lyrics = self.api.fetch_lyrics(self.song["id"])
                 lyrics_image = draw_lyrics(lyrics)
                 self.lyrics_ready.emit(lyrics_image)
                 
             elif self.mode == "download":
-                # 下载歌曲
+                
                 success = self.api.download_song(self.audio_url, self.file_path)
                 if success:
                     self.download_finished.emit(self.file_path)
@@ -271,7 +271,7 @@ class MusicPlayerApp(QMainWindow):
         self.worker = MusicWorker(self.api)
         self.current_song = None
         self.current_song_info = None
-        self.search_results = []  # 存储搜索结果
+        self.search_results = []  
         self.init_ui()
         self.setup_connections()
         logger.info("应用程序启动")
@@ -281,16 +281,16 @@ class MusicPlayerApp(QMainWindow):
         self.setWindowTitle("音乐捕捉器create bilibili by:Railgun_lover")
         self.setGeometry(100, 100, 1000, 800)
         
-        # 创建主部件和布局
+        
         main_widget = QWidget()
         main_layout = QVBoxLayout()
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
+    
         
-        # 创建暗色主题
         self.set_dark_theme()
         
-        # 搜索区域
+        
         search_layout = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("输入歌曲名称...")
@@ -302,10 +302,10 @@ class MusicPlayerApp(QMainWindow):
         search_layout.addWidget(search_button)
         main_layout.addLayout(search_layout)
         
-        # 结果区域
+        
         results_layout = QHBoxLayout()
         
-        # 左侧：搜索结果列表
+        
         results_list_layout = QVBoxLayout()
         results_list_layout.addWidget(QLabel("搜索结果"))
         self.results_list = QListWidget()
@@ -313,10 +313,10 @@ class MusicPlayerApp(QMainWindow):
         results_list_layout.addWidget(self.results_list)
         results_layout.addLayout(results_list_layout, 1)
         
-        # 右侧：歌曲详情
+        
         details_layout = QVBoxLayout()
         
-        # 歌曲信息
+        
         info_layout = QVBoxLayout()
         info_layout.addWidget(QLabel("歌曲信息"))
         
@@ -325,7 +325,7 @@ class MusicPlayerApp(QMainWindow):
         self.song_info.setStyleSheet("font-size: 14px;")
         info_layout.addWidget(self.song_info)
         
-        # 下载按钮
+        
         self.download_button = QPushButton("下载歌曲")
         self.download_button.setStyleSheet("""
             padding: 8px; 
@@ -339,7 +339,7 @@ class MusicPlayerApp(QMainWindow):
         
         details_layout.addLayout(info_layout, 2)
         
-        # 热评
+    
         details_layout.addWidget(QLabel("热门评论"))
         self.comments = QTextEdit()
         self.comments.setReadOnly(True)
@@ -349,11 +349,10 @@ class MusicPlayerApp(QMainWindow):
         results_layout.addLayout(details_layout, 2)
         main_layout.addLayout(results_layout, 5)
         
-        # 歌词区域
+        
         lyrics_layout = QVBoxLayout()
         lyrics_layout.addWidget(QLabel("歌词"))
         
-        # 歌词图像显示区域
         self.lyrics_scroll = QScrollArea()
         self.lyrics_scroll.setWidgetResizable(True)
         self.lyrics_label = QLabel()
@@ -363,10 +362,8 @@ class MusicPlayerApp(QMainWindow):
         
         main_layout.addLayout(lyrics_layout, 5)
         
-        # 状态栏
         self.status_bar = self.statusBar()
         
-        # 连接信号
         search_button.clicked.connect(self.start_search)
         self.results_list.itemClicked.connect(self.song_selected)
         self.download_button.clicked.connect(self.download_current_song)
@@ -546,7 +543,6 @@ class MusicPlayerApp(QMainWindow):
             logger.warning("下载请求: 没有可下载的歌曲")
             return
             
-        # 获取保存路径
         default_name = f"{self.current_song_info['title']}.mp3".replace("/", "_").replace("\\", "_")
         file_path, _ = QFileDialog.getSaveFileName(
             self, 
@@ -561,7 +557,6 @@ class MusicPlayerApp(QMainWindow):
             
         logger.info(f"开始下载歌曲到: {file_path}")
         
-        # 创建进度对话框
         self.progress_dialog = QProgressDialog("下载歌曲...", "取消", 0, 100, self)
         self.progress_dialog.setWindowTitle("下载进度")
         self.progress_dialog.setWindowModality(Qt.WindowModal)
@@ -570,7 +565,6 @@ class MusicPlayerApp(QMainWindow):
         self.progress_dialog.canceled.connect(self.cancel_download)
         self.progress_dialog.show()
         
-        # 开始下载
         self.worker.download_song(self.current_song_info['audio_url'], file_path)
         
     def update_download_progress(self, progress):
@@ -609,29 +603,25 @@ def draw_lyrics(
     image_width=1000,
     font_size=30,
     line_spacing=20,
-    top_color=(255, 250, 240),  # 暖白色
+    top_color=(255, 250, 240),  
     bottom_color=(235, 255, 247),
     text_color=(70, 70, 70),
 ) -> bytes:
     """
     渲染歌词为图片，背景为竖向渐变色，返回 JPEG 字节流。
     """
-    # 清除时间戳但保留空白行
     lines = lyrics.splitlines()
     cleaned_lines = []
     for line in lines:
         cleaned = re.sub(r"\[\d{2}:\d{2}(?:\.\d{2,3})?\]", "", line)
         cleaned_lines.append(cleaned if cleaned != "" else "")
 
-    # 加载字体
     try:
         font = ImageFont.truetype(FONT_PATH, font_size)
     except IOError:
-        # 如果找不到字体，使用默认字体
         font = ImageFont.load_default()
         logger.warning("使用默认字体渲染歌词")
 
-    # 计算总高度
     dummy_img = Image.new("RGB", (image_width, 1))
     draw = ImageDraw.Draw(dummy_img)
     line_heights = [
@@ -640,7 +630,6 @@ def draw_lyrics(
     ]
     total_height = sum(line_heights) + line_spacing * (len(cleaned_lines) - 1) + 100
 
-    # 创建渐变背景图像
     img = Image.new("RGB", (image_width, total_height))
     for y in range(total_height):
         ratio = y / total_height
@@ -652,7 +641,6 @@ def draw_lyrics(
 
     draw = ImageDraw.Draw(img)
 
-    # 绘制歌词文本（居中）
     y = 50
     for line, line_height in zip(cleaned_lines, line_heights):
         text = line if line.strip() else "　"  # 全角空格占位
