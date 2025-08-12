@@ -40,7 +40,6 @@ from PyQt5.QtGui import QCursor
 from PyQt5.QtCore import QUrl
 from PyQt5.QtWidgets import QFontDialog
 from PyQt5.QtCore import QByteArray
-from music_player import MusicPlayerApp
 
 def get_settings_path():
     """获取设置文件路径"""
