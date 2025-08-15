@@ -22,15 +22,20 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-:: 使用国内镜像源加速下载
-pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+:: 安装基本依赖
+echo 安装基本依赖...
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple PyQt5 requests beautifulsoup4 aiohttp httpx bilibili-api Pillow qasync
 
+:: 安装音频/视频处理依赖
+echo 安装音频/视频处理依赖...
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple websockets numpy flask qrcode scikit-learn librosa aiofiles
+
+:: 检查是否安装成功
+pip list | findstr "librosa" >nul
 if %errorlevel% neq 0 (
     echo.
-    echo 安装失败，请检查网络连接或手动安装依赖
-    echo 可以尝试运行: pip install -r requirements.txt
-    pause
-    exit /b
+    echo 警告: 音频特征库安装失败，部分高级功能将不可用
+    echo 可以尝试手动安装: pip install scikit-learn librosa
 )
 
 echo.
