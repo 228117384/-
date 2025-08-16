@@ -9,6 +9,7 @@ import sqlite3
 import random
 import re
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -103,9 +104,28 @@ def get_settings_path():
     else:
         base_dir = os.path.dirname(os.path.abspath(__file__))
     
-    settings_path = os.path.join(base_dir, "settings.json")
-    logging.info(f"设置文件路径: {settings_path}")
-    return settings_path
+    # 在Linux上使用XDG配置目录
+    if sys.platform.startswith('linux'):
+        config_dir = os.path.join(os.path.expanduser("~"), ".config", "music-player")
+        if not os.path.exists(config_dir):
+            os.makedirs(config_dir, exist_ok=True)
+        return os.path.join(config_dir, "settings.json")
+    
+    return os.path.join(base_dir, "settings.json")
+
+def get_temp_dir(subdir):
+    """获取临时目录路径"""
+    if sys.platform.startswith('linux'):
+        # 使用Linux标准的临时目录
+        temp_base = os.path.join("/tmp", "music-player")
+    else:
+        # Windows和其他系统使用应用目录
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        temp_base = os.path.join(base_dir, "data")
+    
+    temp_dir = os.path.join(temp_base, subdir)
+    os.makedirs(temp_dir, exist_ok=True)
+    return temp_dir
 
 def load_default_settings():
     """加载默认设置"""
@@ -401,14 +421,22 @@ class VideoAPI(QObject):
     
     async def _merge_file_to_mp4(self, v_full_file_name: str, a_full_file_name: str, output_file_name: str):
         """合并视频文件和音频文件"""
-        command = f'ffmpeg -y -i "{v_full_file_name}" -i "{a_full_file_name}" -c copy "{output_file_name}"'
-        process = await asyncio.create_subprocess_shell(
-            command, 
-            stdout=asyncio.subprocess.PIPE, 
+        # 使用列表参数替代字符串命令，避免shell注入问题
+        command = [
+            'ffmpeg', '-y',
+            '-i', v_full_file_name,
+            '-i', a_full_file_name,
+            '-c', 'copy',
+            output_file_name
+        ]
+        
+        # 创建子进程
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
         await process.communicate()
-
 
 class VideoSearchDialog(QDialog):
     """Bilibili视频搜索对话框"""
@@ -419,7 +447,7 @@ class VideoSearchDialog(QDialog):
         
         self.video_api = VideoAPI(cookie, parent=self)
         self.video_api.download_progress.connect(self.update_progress)
-        self.temp_dir = os.path.abspath(os.path.join("data", "bilibili_video_cache"))
+        self.temp_dir = get_temp_dir("bilibili_video_cache")
         os.makedirs(self.temp_dir, exist_ok=True)
         self.selected_video = None
         self.search_thread = None
@@ -652,6 +680,7 @@ class VideoDownloadThread(QThread):
         
     def run(self):
         loop = None
+
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -667,6 +696,11 @@ class VideoDownloadThread(QThread):
                 self.download_complete.emit(self.file_path)
             else:
                 self.error_occurred.emit("下载失败，未获取到文件")
+            if temp_file:
+                # 修复Linux权限问题
+                if sys.platform.startswith('linux'):
+                    os.chmod(temp_file, 0o644)
+                os.replace(temp_file, self.file_path)
         except Exception as e:
             self.error_occurred.emit(str(e))
         finally:
@@ -795,7 +829,7 @@ class AudioSearchDialog(QDialog):
         
         self.audio_api = AudioAPI(cookie, parent=self)
         self.audio_api.download_progress.connect(self.update_progress)
-        self.temp_dir = os.path.abspath(os.path.join("data", "bilibili_audio_cache"))
+        self.temp_dir = get_temp_dir("bilibili_audio_cache")
         os.makedirs(self.temp_dir, exist_ok=True)
         self.selected_video = None
         self.search_thread = None
@@ -2129,6 +2163,7 @@ class MusicWorker(QThread):
         try:
             # 公共音乐API有特殊的下载URL结构
             if "api.railgun.live" in url:
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
                 download_url = url.replace("/info/", "/download/")
                 if not download_url.endswith(".mp3"):
                     download_url += ".mp3"
@@ -2513,13 +2548,20 @@ class SettingsDialog(QDialog):
                 self.source_combo.removeItem(self.source_combo.currentIndex())
         
     def refresh_dns_cache(self):
+        """刷新DNS缓存"""
         try:
             if sys.platform == "win32":
                 os.system("ipconfig /flushdns")
             elif sys.platform == "darwin":
                 os.system("sudo killall -HUP mDNSResponder")
             else:
-                os.system("sudo systemd-resolve --flush-caches")
+                # Linux使用不同的命令
+                if os.path.exists("/etc/init.d/nscd"):
+                    os.system("sudo /etc/init.d/nscd restart")
+                elif os.path.exists("/usr/bin/systemd-resolve"):
+                    os.system("sudo systemd-resolve --flush-caches")
+                else:
+                    os.system("sudo systemctl restart systemd-resolved.service")
             QMessageBox.information(self, "成功", "DNS缓存已刷新")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"刷新DNS缓存失败: {str(e)}")
@@ -3014,7 +3056,7 @@ class ExternalLyricsWindow(QMainWindow):
         self.setWindowTitle("歌词 - Railgun_lover")
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setMinimumSize(800, 200)
+        self.setMinimumSize(1400, 200)
         
         # 中央部件
         central_widget = QWidget()
@@ -3054,9 +3096,9 @@ class ExternalLyricsWindow(QMainWindow):
         # 初始位置（屏幕底部中央）
         screen_geometry = QApplication.primaryScreen().availableGeometry()
         self.setGeometry(
-            (screen_geometry.width() - 800) // 2,
+            (screen_geometry.width() - 1400) // 2,
             screen_geometry.height() - 200,  # 降低位置
-            800,
+            1400,
             200  # 增加高度以适应双行歌词
         )
         
@@ -3186,9 +3228,9 @@ class ExternalLyricsWindow(QMainWindow):
         """重置歌词窗口位置到屏幕底部中央"""
         screen_geometry = QApplication.primaryScreen().availableGeometry()
         self.setGeometry(
-            (screen_geometry.width() - 800) // 2,
+            (screen_geometry.width() - 1400) // 2,
             screen_geometry.height() - 200,
-            800,
+            1400,
             200
         )
         self.save_lyrics_settings()
@@ -3222,9 +3264,22 @@ class ExternalLyricsWindow(QMainWindow):
         self.lyrics_settings = settings.get("external_lyrics", {})
         
         # 加载字体信息
-        font_str = self.lyrics_settings.get("font", "Microsoft YaHei,36")
-        self.font = QFont()
-        self.font.fromString(font_str)
+        font_str = self.lyrics_settings.get("font", "")
+        if font_str:
+            self.font = QFont()
+            self.font.fromString(font_str)
+        else:
+            # Linux字体回退
+            self.font = QFont()
+            linux_fonts = ["Noto Sans CJK SC", "WenQuanYi Micro Hei", "DejaVu Sans", "Sans Serif"]
+            for font_name in linux_fonts:
+                if font_name in QFontDatabase().families():
+                    self.font.setFamily(font_name)
+                    break
+            else:
+                self.font.setFamily("Sans Serif")
+            self.font.setPointSize(24)
+            
         # 应用字体
         self.current_line_label.setFont(self.font)
         # 调整下一行字体大小
@@ -3643,7 +3698,7 @@ class ExternalLyricsWindow(QMainWindow):
         return styled_text
         
         # 设置更大的初始尺寸以容纳长歌词
-        self.setMinimumSize(1000, 300)
+        self.setMinimumSize(1400, 200)
 
     # =============== 事件处理 ===============
     def mousePressEvent(self, event):
@@ -4011,14 +4066,20 @@ class MusicRoomManager:
     def connect_to_server(self):
         """连接到音乐室服务器"""
         if self.connected:
-            return True
-            
+            return True            
         try:
-            self.websocket = QWebSocket()
+            # 修复Linux上的WebSocket连接
+            if sys.platform.startswith('linux'):
+                # Linux可能需要额外的SSL配置
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                self.websocket = QWebSocket(sslConfiguration=ssl_context)
+            else:
+                self.websocket = QWebSocket()
+                
             self.websocket.connected.connect(self.on_connected)
-            self.websocket.disconnected.connect(self.on_disconnected)
-            self.websocket.textMessageReceived.connect(self.on_message_received)
-            self.websocket.error.connect(self.on_error)
+            # ...其他连接设置
             self.websocket.open(QUrl(self.server_url))
             return True
         except Exception as e:
@@ -4481,7 +4542,33 @@ class MusicRoomDialog(QDialog):
             
         self.room_manager.send_playback_command("volume", volume=value)
     
-
+class MainWindow(QMainWindow):
+    def __init__(self):
+        # ...
+        # Linux桌面环境检测
+        if sys.platform.startswith('linux'):
+            self.check_linux_dependencies()
+    
+    def check_linux_dependencies(self):
+        """检查Linux依赖"""
+        missing = []
+        # 检查ffmpeg
+        if not self.check_command_exists("ffmpeg"):
+            missing.append("ffmpeg")
+        
+        # 检查必要的库
+        if missing:
+            msg = "缺少必要的依赖: " + ", ".join(missing)
+            QMessageBox.warning(self, "依赖缺失", f"{msg}\n请使用系统包管理器安装")
+    
+    def check_command_exists(self, cmd):
+        """检查命令是否存在"""
+        try:
+            subprocess.run([cmd, "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except (OSError, subprocess.CalledProcessError):
+            return False
+        
 # =============== 主应用程序 ===============
 class MusicPlayerApp(QMainWindow):
     def __init__(self):
@@ -7323,11 +7410,26 @@ def draw_lyrics(
     for line in lines:
         cleaned = re.sub(r"\[\d{2}:\d{2}(?:\.\d{2,3})?\]", "", line)
         cleaned_lines.append(cleaned if cleaned != "" else "")
+    
+    # 添加Linux字体回退
     try:
-        font = ImageFont.truetype(os.O_PATH, font_size)
+        if sys.platform.startswith('linux'):
+            # 尝试几种常见Linux字体
+            for font_name in ["DejaVuSans.ttf", "FreeSans.ttf", "LiberationSans-Regular.ttf", "Ubuntu-R.ttf"]:
+                font_path = f"/usr/share/fonts/truetype/{font_name}"
+                if os.path.exists(font_path):
+                    font = ImageFont.truetype(font_path, font_size)
+                    break
+            else:
+                # 如果找不到特定字体，使用默认字体
+                font = ImageFont.load_default()
+                logger.warning("使用默认字体渲染歌词")
+        else:
+            font = ImageFont.truetype(os.O_PATH, font_size)
     except IOError:
         font = ImageFont.load_default()
         logger.warning("使用默认字体渲染歌词")
+
     dummy_img = Image.new("RGB", (image_width, 1))
     draw = ImageDraw.Draw(dummy_img)
     line_heights = [

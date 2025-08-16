@@ -28,7 +28,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple PyQt5 requests beautiful
 
 :: 安装音频/视频处理依赖
 echo 安装音频/视频处理依赖...
-pip install -i https://pypi.tuna.tsinghua.edu.cn/simple websockets numpy flask qrcode scikit-learn librosa aiofiles
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple websockets numpy flask qrcode scikit-learn librosa aiofiles mutagen pycryptodome pydub sqlalchemy waitress
 
 :: 检查是否安装成功
 pip list | findstr "librosa" >nul
