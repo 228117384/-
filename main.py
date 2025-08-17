@@ -48,6 +48,11 @@ from PyQt5.QtWidgets import (
     QScrollArea, QSlider, QSpinBox, QStatusBar, QTabWidget, QTableWidget,
     QTableWidgetItem, QTextEdit, QTreeWidget, QVBoxLayout, QWidget, QTreeWidget
 )
+from PyQt5.QtMultimediaWidgets import QVideoWidget
+from PyQt5.QtMultimedia import QAudioProbe, QAudioFormat
+from PyQt5.QtGui import QPainter
+from PyQt5.QtWidgets import QToolBar
+from scipy.fftpack import fft 
 try:
     import librosa
     import librosa.feature
@@ -1128,8 +1133,13 @@ class PlaylistManager:
         return False
         
     def add_to_playlist(self, playlist_name, song_path):
+        """添加歌曲到播放列表"""
         if playlist_name in self.playlists:
-            if song_path not in self.playlists[playlist_name]:
+            # 确保只保存路径字符串
+            if isinstance(song_path, dict):
+                song_path = song_path.get("path", "")
+            
+            if song_path and song_path not in self.playlists[playlist_name]:
                 self.playlists[playlist_name].append(song_path)
                 self.save_playlists()
                 return True
@@ -1203,11 +1213,20 @@ class PlaylistDialog(QDialog):
             self.update_song_list(self.playlist_combo.currentText())
 
     def update_song_list(self, playlist_name):
+        """更新歌曲列表显示"""
         self.song_list.clear()
         if playlist_name in self.playlist_manager.playlists:
-            for song_path in self.playlist_manager.playlists[playlist_name]:
-                song_name = os.path.basename(song_path)
-                self.song_list.addItem(song_name)
+            for song in self.playlist_manager.playlists[playlist_name]:
+                # 确保我们获取的是文件路径字符串
+                if isinstance(song, dict):
+                    song_path = song.get("path", "")
+                else:
+                    song_path = song
+                
+                # 获取歌曲名称
+                if song_path:
+                    song_name = os.path.basename(song_path)
+                    self.song_list.addItem(song_name)
                 
     def play_playlist(self):
         playlist_name = self.playlist_combo.currentText()
@@ -2654,15 +2673,6 @@ class SettingsDialog(QDialog):
         else:
             QMessageBox.warning(self, "错误", "保存设置失败，请检查日志")
         
-        # 更新歌词设置（直接从控件获取值）
-        lyrics_settings = {
-            "font": self.font_combo.currentText(),
-            "color": self.color_button.text(),
-            "opacity": self.opacity_slider.value(),
-            "effect_type": self.effect_combo.currentText()
-        }
-        self.settings["lyrics"] = lyrics_settings
-        
         # 保存设置
         if save_settings(self.settings):
             if self.parent:
@@ -3056,7 +3066,7 @@ class ExternalLyricsWindow(QMainWindow):
         self.setWindowTitle("歌词 - Railgun_lover")
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setMinimumSize(1400, 200)
+        self.setMinimumSize(1400, 300)
         
         # 中央部件
         central_widget = QWidget()
@@ -3066,13 +3076,13 @@ class ExternalLyricsWindow(QMainWindow):
         
         # 歌词标签 - 使用双行显示
         self.lyrics_layout = QVBoxLayout()
-        self.lyrics_layout.setSpacing(10)
-        self.lyrics_layout.setContentsMargins(20, 20, 20, 20)
+        self.lyrics_layout.setSpacing(15)
+        self.lyrics_layout.setContentsMargins(30, 30, 30, 30)
 
         # 创建翻译标签
         self.translation_label = QLabel("")
         self.translation_label.setAlignment(Qt.AlignCenter)
-        self.translation_label.setStyleSheet("font-size: 20px; color: #AAAAAA;")
+        self.translation_label.setStyleSheet("font-size: 24px; color: #AAAAAA;")
         self.translation_label.setWordWrap(True)
         
         # 将翻译标签添加到布局
@@ -3081,12 +3091,12 @@ class ExternalLyricsWindow(QMainWindow):
         # 当前行标签
         self.current_line_label = QLabel("")
         self.current_line_label.setAlignment(Qt.AlignCenter)
-        self.current_line_label.setStyleSheet("font-size: 36px; font-weight: bold; color: white;")
+        self.current_line_label.setStyleSheet("font-size: 48px; font-weight: bold; color: white;")
         
         # 下一行标签
         self.next_line_label = QLabel("")
         self.next_line_label.setAlignment(Qt.AlignCenter)
-        self.next_line_label.setStyleSheet("font-size: 24px; color: #AAAAAA;")
+        self.next_line_label.setStyleSheet("font-size: 36px; color: #AAAAAA;")
         
         # 添加标签到布局
         self.lyrics_layout.addWidget(self.current_line_label)
@@ -3097,9 +3107,9 @@ class ExternalLyricsWindow(QMainWindow):
         screen_geometry = QApplication.primaryScreen().availableGeometry()
         self.setGeometry(
             (screen_geometry.width() - 1400) // 2,
-            screen_geometry.height() - 200,  # 降低位置
+            screen_geometry.height() - 300,  # 降低位置
             1400,
-            200  # 增加高度以适应双行歌词
+            300  # 增加高度以适应双行歌词
         )
         
         # 右键菜单
@@ -3950,7 +3960,8 @@ class AdvancedPlaylistDialog(QDialog):
         self.tabs.addTab(self.playlist_tab, "普通列表")
         self.tabs.addTab(self.smart_playlist_tab, "智能列表")
         layout.addWidget(self.tabs)
-        
+        self.playlist_tree.itemDoubleClicked.connect(self.on_playlist_double_clicked)
+
         # 按钮区域
         btn_layout = QHBoxLayout()
         self.export_btn = QPushButton("导出播放列表")
@@ -4031,6 +4042,112 @@ class AdvancedPlaylistDialog(QDialog):
         del_btn = QPushButton("删除")
         del_btn.clicked.connect(lambda: self.delete_rule_row(row))
         self.rules_table.setCellWidget(row, 3, del_btn)
+
+    def on_playlist_double_clicked(self, item, column):
+        """处理播放列表树的双击事件"""
+        # 获取双击的项目
+        if item and item.childCount() == 0:  # 如果是叶子节点（歌曲）
+            playlist_name = item.parent().text(0)
+            song_path = item.text(0)
+            self.edit_song(playlist_name, song_path)
+        else:  # 如果是播放列表
+            playlist_name = item.text(0)
+            self.edit_playlist(playlist_name)
+
+    def edit_playlist(self, playlist_name):
+        """编辑播放列表"""
+        # 获取播放列表
+        playlist = self.playlist_manager.playlists.get(playlist_name)
+        if not playlist:
+            return
+            
+        # 创建编辑对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"编辑播放列表: {playlist_name}")
+        layout = QVBoxLayout()
+        
+        # 播放列表名称
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("播放列表名称:"))
+        name_edit = QLineEdit(playlist_name)
+        name_layout.addWidget(name_edit)
+        layout.addLayout(name_layout)
+        
+        # 歌曲列表
+        songs_label = QLabel("歌曲列表:")
+        layout.addWidget(songs_label)
+        
+        songs_list = QListWidget()
+        for song in playlist:
+            songs_list.addItem(song)
+        layout.addWidget(songs_list)
+        
+        # 按钮
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        dialog.setLayout(layout)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            new_name = name_edit.text().strip()
+            if new_name and new_name != playlist_name:
+                # 重命名播放列表
+                self.playlist_manager.playlists[new_name] = self.playlist_manager.playlists.pop(playlist_name)
+                self.playlist_manager.save_playlists()
+                self.update_playlist_tree()
+    
+    def edit_song(self, playlist_name, song_path):
+        """编辑歌曲信息"""
+        # 获取歌曲信息
+        # 这里简化处理，实际应用中可以从数据库获取详细信息
+        song_name = os.path.basename(song_path)
+        
+        # 创建编辑对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"编辑歌曲: {song_name}")
+        layout = QFormLayout()
+        
+        # 歌曲名称
+        name_edit = QLineEdit(song_name)
+        layout.addRow("歌曲名称:", name_edit)
+        
+        # 文件路径
+        path_edit = QLineEdit(song_path)
+        path_edit.setReadOnly(True)
+        layout.addRow("文件路径:", path_edit)
+        
+        # 浏览按钮
+        browse_button = QPushButton("浏览...")
+        browse_button.clicked.connect(lambda: self.browse_song_path(path_edit))
+        layout.addRow("", browse_button)
+        
+        # 按钮
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addRow(button_box)
+        
+        dialog.setLayout(layout)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            new_name = name_edit.text().strip()
+            if new_name and new_name != song_name:
+                # 更新播放列表中的歌曲名称
+                playlist = self.playlist_manager.playlists[playlist_name]
+                index = playlist.index(song_path)
+                playlist[index] = new_name
+                self.playlist_manager.save_playlists()
+                self.update_playlist_tree()
+    
+    def browse_song_path(self, path_edit):
+        """浏览并选择新的歌曲路径"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择歌曲文件", "", "音频文件 (*.mp3 *.wav *.flac *.m4a)"
+        )
+        if file_path:
+            path_edit.setText(file_path)
     
     def delete_rule_row(self, row):
         self.rules_table.removeRow(row)
@@ -4569,6 +4686,551 @@ class MainWindow(QMainWindow):
         except (OSError, subprocess.CalledProcessError):
             return False
         
+class SyncServer(QThread):
+    """设备同步服务器"""
+    message_received = pyqtSignal(dict)
+    
+    def __init__(self, port=25565, parent=None):
+        super().__init__(parent)
+        self.port = port
+        self.running = False
+        self.clients = {}
+        self.server_socket = None
+    
+    def run(self):
+        self.running = True
+        try:
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.bind(('0.0.0.0', self.port))
+            self.server_socket.listen(5)
+            
+            # 获取本机IP
+            hostname = socket.gethostname()
+            ip = socket.gethostbyname(hostname)
+            self.message_received.emit({
+                'type': 'server_status',
+                'message': f"同步服务器已启动: {ip}:{self.port}"
+            })
+            
+            while self.running:
+                client_socket, addr = self.server_socket.accept()
+                threading.Thread(target=self.handle_client, args=(client_socket,)).start()
+        except Exception as e:
+            self.message_received.emit({
+                'type': 'error',
+                'message': f"服务器错误: {str(e)}"
+            })
+    
+    def stop(self):
+        self.running = False
+        if self.server_socket:
+            self.server_socket.close()
+    
+    def handle_client(self, client_socket):
+        """处理客户端连接"""
+        try:
+            client_id = f"client_{len(self.clients) + 1}"
+            self.clients[client_id] = client_socket
+            
+            # 通知客户端连接成功
+            self.send_to_client(client_id, {
+                'type': 'connected',
+                'client_id': client_id
+            })
+            
+            # 广播新客户端连接
+            self.broadcast({
+                'type': 'client_joined',
+                'client_id': client_id
+            }, exclude=client_id)
+            
+            # 接收消息
+            while self.running:
+                data = client_socket.recv(1024)
+                if not data:
+                    break
+                
+                message = json.loads(data.decode('utf-8'))
+                if message.get('type') == 'sync':
+                    # 广播同步消息给所有其他客户端
+                    self.broadcast(message, exclude=client_socket)
+                else:
+                    # 转发给主程序
+                    self.message_received.emit(message)
+        
+        except Exception as e:
+            self.message_received.emit({
+                'type': 'error',
+                'message': f"客户端错误: {str(e)}"
+            })
+        finally:
+            # 客户端断开处理
+            if client_id in self.clients:
+                del self.clients[client_id]
+                self.broadcast({
+                    'type': 'client_left',
+                    'client_id': client_id
+                })
+            client_socket.close()
+    
+    def send_to_client(self, client_id, message):
+        """发送消息给特定客户端"""
+        if client_id in self.clients:
+            try:
+                self.clients[client_id].sendall(json.dumps(message).encode('utf-8'))
+            except Exception as e:
+                self.message_received.emit({
+                    'type': 'error',
+                    'message': f"发送错误: {str(e)}"
+                })
+    
+    def broadcast(self, message, exclude=None):
+        """广播消息给所有客户端"""
+        for client_id, client_socket in list(self.clients.items()):
+            if client_socket != exclude:
+                try:
+                    client_socket.sendall(json.dumps(message).encode('utf-8'))
+                except Exception as e:
+                    self.message_received.emit({
+                        'type': 'error',
+                        'message': f"广播错误: {str(e)}"
+                    })
+
+class SyncClient(QObject):
+    """设备同步客户端"""
+    message_received = pyqtSignal(dict)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.client_socket = None
+        self.running = False
+        self.thread = None
+    
+    def connect_to_server(self, ip, port):
+        """连接到同步服务器"""
+        try:
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client_socket.connect((ip, port))
+            self.running = True
+            
+            # 启动接收线程
+            self.thread = threading.Thread(target=self.receive_messages)
+            self.thread.daemon = True
+            self.thread.start()
+            
+            return True
+        except Exception as e:
+            self.message_received.emit({
+                'type': 'error',
+                'message': f"连接失败: {str(e)}"
+            })
+            return False
+    
+    def receive_messages(self):
+        """接收服务器消息"""
+        while self.running:
+            try:
+                data = self.client_socket.recv(1024)
+                if not data:
+                    break
+                
+                message = json.loads(data.decode('utf-8'))
+                self.message_received.emit(message)
+            except:
+                break
+    
+    def send_message(self, message):
+        """发送消息到服务器"""
+        if self.client_socket:
+            try:
+                self.client_socket.sendall(json.dumps(message).encode('utf-8'))
+            except Exception as e:
+                self.message_received.emit({
+                    'type': 'error',
+                    'message': f"发送失败: {str(e)}"
+                })
+    
+    def disconnect(self):
+        """断开连接"""
+        self.running = False
+        if self.client_socket:
+            self.client_socket.close()
+
+class VideoPlayer(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout()
+        
+        # 视频播放器
+        self.media_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
+        self.video_widget = QVideoWidget()
+        
+        # 控制按钮
+        self.play_button = QPushButton("播放")
+        self.play_button.clicked.connect(self.play_video)
+        self.stop_button = QPushButton("停止")
+        self.stop_button.clicked.connect(self.stop_video)
+
+        # 添加全屏支持
+        self.video_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.video_widget.customContextMenuRequested.connect(self.show_video_context_menu)
+        
+        # 布局
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(self.play_button)
+        button_layout.addWidget(self.stop_button)
+        
+        layout.addWidget(self.video_widget)
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+        
+        self.media_player.setVideoOutput(self.video_widget)
+    
+    def load_video(self, file_path):
+        """加载视频文件"""
+        self.media_player.setMedia(QMediaContent(QUrl.fromLocalFile(file_path)))
+        self.play_video()
+    
+    def play_video(self):
+        """播放视频"""
+        self.media_player.play()
+    
+    def stop_video(self):
+        """停止播放"""
+        self.media_player.stop()
+    
+    def keyPressEvent(self, event):
+        """全屏支持"""
+        if event.key() == Qt.Key_Escape and self.video_widget.isFullScreen():
+            self.video_widget.setFullScreen(False)
+        elif event.key() == Qt.Key_F:
+            self.video_widget.setFullScreen(not self.video_widget.isFullScreen())
+
+    def show_video_context_menu(self, pos):
+        """显示视频右键菜单"""
+        menu = QMenu(self)
+        
+        fullscreen_action = QAction("全屏", self)
+        fullscreen_action.triggered.connect(self.toggle_fullscreen)
+        menu.addAction(fullscreen_action)
+        
+        menu.addSeparator()
+        
+        open_action = QAction("打开视频", self)
+        open_action.triggered.connect(self.parent().open_video_file)
+        menu.addAction(open_action)
+        
+        menu.exec_(self.video_widget.mapToGlobal(pos))
+    
+    def toggle_fullscreen(self):
+        """切换全屏状态"""
+        if self.video_widget.isFullScreen():
+            self.video_widget.setFullScreen(False)
+        else:
+            self.video_widget.setFullScreen(True)
+
+class UserManager:
+    def __init__(self, db_path='users.db'):
+        self.conn = sqlite3.connect(db_path)
+        self.create_tables()
+    
+    def create_tables(self):
+        """创建用户数据库表"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                email TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER PRIMARY KEY,
+                last_played TEXT,
+                volume INTEGER DEFAULT 80,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS playlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS playlist_items (
+                playlist_id INTEGER,
+                song_path TEXT,
+                position INTEGER,
+                PRIMARY KEY(playlist_id, song_path),
+                FOREIGN KEY(playlist_id) REFERENCES playlists(id)
+            )
+        ''')
+        self.conn.commit()
+    
+    def register_user(self, username, password, email):
+        """注册新用户"""
+        try:
+            hashed_password = hashlib.sha256(password.encode()).hexdigest()
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT INTO users (username, password, email) 
+                VALUES (?, ?, ?)
+            ''', (username, hashed_password, email))
+            user_id = cursor.lastrowid
+            
+            # 创建默认设置
+            cursor.execute('''
+                INSERT INTO user_settings (user_id) 
+                VALUES (?)
+            ''', (user_id,))
+            
+            self.conn.commit()
+            return user_id
+        except sqlite3.IntegrityError:
+            return None
+    
+    def login_user(self, username, password):
+        """用户登录"""
+        hashed_password = hashlib.sha256(password.encode()).hexdigest()
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT id, password FROM users WHERE username = ?
+        ''', (username,))
+        result = cursor.fetchone()
+        
+        if result and result[1] == hashed_password:
+            return result[0]  # 返回用户ID
+        return None
+    
+    def get_user_settings(self, user_id):
+        """获取用户设置"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT last_played, volume FROM user_settings WHERE user_id = ?
+        ''', (user_id,))
+        return cursor.fetchone()
+    
+    def save_user_settings(self, user_id, last_played=None, volume=None):
+        """保存用户设置"""
+        cursor = self.conn.cursor()
+        updates = []
+        params = []
+        
+        if last_played:
+            updates.append("last_played = ?")
+            params.append(last_played)
+        if volume is not None:
+            updates.append("volume = ?")
+            params.append(volume)
+        
+        if updates:
+            params.append(user_id)
+            query = f"UPDATE user_settings SET {', '.join(updates)} WHERE user_id = ?"
+            cursor.execute(query, params)
+            self.conn.commit()
+    
+    def get_user_playlists(self, user_id):
+        """获取用户播放列表"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT id, name FROM playlists WHERE user_id = ?
+        ''', (user_id,))
+        return cursor.fetchall()
+    
+    def create_playlist(self, user_id, name):
+        """创建播放列表"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT INTO playlists (user_id, name) 
+            VALUES (?, ?)
+        ''', (user_id, name))
+        playlist_id = cursor.lastrowid
+        self.conn.commit()
+        return playlist_id
+    
+    def save_playlist(self, playlist_id, songs):
+        """保存播放列表歌曲"""
+        cursor = self.conn.cursor()
+        
+        # 删除原有歌曲
+        cursor.execute('''
+            DELETE FROM playlist_items WHERE playlist_id = ?
+        ''', (playlist_id,))
+        
+        # 添加新歌曲
+        for position, song_path in enumerate(songs):
+            cursor.execute('''
+                INSERT INTO playlist_items (playlist_id, song_path, position)
+                VALUES (?, ?, ?)
+            ''', (playlist_id, song_path, position))
+        
+        self.conn.commit()
+    
+    def load_playlist(self, playlist_id):
+        """加载播放列表歌曲"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT song_path 
+            FROM playlist_items 
+            WHERE playlist_id = ? 
+            ORDER BY position
+        ''', (playlist_id,))
+        return [row[0] for row in cursor.fetchall()]
+
+class LoginDialog(QDialog):
+    """用户登录对话框"""
+    def __init__(self, user_manager, parent=None):
+        super().__init__(parent)
+        self.user_manager = user_manager
+        self.setWindowTitle("用户登录")
+        self.setGeometry(300, 300, 300, 150)
+        
+        layout = QFormLayout()
+        
+        self.username_edit = QLineEdit()
+        self.password_edit = QLineEdit()
+        self.password_edit.setEchoMode(QLineEdit.Password)
+        
+        layout.addRow("用户名:", self.username_edit)
+        layout.addRow("密码:", self.password_edit)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.attempt_login)
+        button_box.rejected.connect(self.reject)
+        
+        layout.addWidget(button_box)
+        self.setLayout(layout)
+    
+    def attempt_login(self):
+        username = self.username_edit.text().strip()
+        password = self.password_edit.text().strip()
+        
+        if not username or not password:
+            QMessageBox.warning(self, "错误", "请输入用户名和密码")
+            return
+            
+        user_id = self.user_manager.login_user(username, password)
+        if user_id:
+            self.user_id = user_id
+            self.accept()
+        else:
+            QMessageBox.warning(self, "错误", "用户名或密码错误")
+
+class SpectrumWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(300, 150)
+        self.bars = []
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update)
+        self.timer.start(30)  # 30ms刷新一次
+        
+    def set_audio_probe(self, media_player):
+        """设置音频探测器"""
+        self.probe = QAudioProbe()
+        self.probe.setSource(media_player)
+        self.probe.audioBufferProbed.connect(self.process_buffer)
+    
+    def process_buffer(self, buffer):
+        """处理音频缓冲区"""
+        # 获取音频数据
+        if buffer.format().sampleType() == QAudioFormat.SignedInt:
+            # 转换为numpy数组
+            ptr = buffer.data()
+            if buffer.sampleType() == QAudioFormat.SignedInt:
+                dtype = np.int16
+            else:
+                dtype = np.float32
+                
+            samples = np.frombuffer(ptr, dtype=dtype, count=buffer.sampleCount())
+            
+            # 计算FFT
+            fft_data = np.abs(fft(samples))
+            
+            # 取前一半数据（对称）
+            fft_data = fft_data[:len(fft_data)//2]
+            
+            # 分组显示（将频谱分为60组）
+            group_size = max(1, len(fft_data) // 60)
+            grouped = []
+            for i in range(0, len(fft_data), group_size):
+                group = fft_data[i:i+group_size]
+                grouped.append(np.max(group))
+            
+            # 归一化并保存
+            max_value = np.max(grouped) if np.max(grouped) > 0 else 1
+            self.bars = [min(1.0, v / max_value) for v in grouped]
+    
+    def paintEvent(self, event):
+        """绘制频谱"""
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 180))
+        
+        if not self.bars:
+            return
+            
+        bar_width = self.width() / len(self.bars)
+        for i, value in enumerate(self.bars):
+            height = value * self.height()
+            
+            # 创建渐变颜色（低值蓝色，高值红色）
+            if value < 0.3:
+                color = QColor(0, 0, 255, 200)
+            elif value < 0.6:
+                color = QColor(0, 255, 0, 200)
+            else:
+                color = QColor(255, 0, 0, 200)
+            
+            painter.fillRect(
+                i * bar_width, 
+                self.height() - height,
+                bar_width,
+                height,
+                color
+            )
+
+class SpeedControl:
+    def __init__(self, media_player):
+        self.media_player = media_player
+        self.current_speed = 1.0
+    
+    def set_speed(self, speed):
+        """设置播放速度"""
+        # 确保速度在合理范围内 (0.5x - 2.0x)
+        speed = max(0.5, min(2.0, speed))
+        self.current_speed = speed
+        
+        # 设置媒体播放器速度
+        self.media_player.setPlaybackRate(speed)
+        
+        # 调整音频音高（可选）
+        self.adjust_pitch(speed)
+    
+    def adjust_pitch(self, speed):
+        """调整音高以匹配速度（可选实现）"""
+        # 实际实现可能需要使用音频处理库
+        # 这里仅作为占位符
+        pass
+    
+    def reset(self):
+        """重置为正常速度"""
+        self.set_speed(1.0)
+    
+    def increase_speed(self, step=0.1):
+        """增加播放速度"""
+        self.set_speed(self.current_speed + step)
+    
+    def decrease_speed(self, step=0.1):
+        """降低播放速度"""
+        self.set_speed(self.current_speed - step)
+
 # =============== 主应用程序 ===============
 class MusicPlayerApp(QMainWindow):
     def __init__(self):
@@ -4584,9 +5246,30 @@ class MusicPlayerApp(QMainWindow):
         self.log_console = None
         self.active_threads = []
         self.tools_menu = None 
+        # 初始化用户系统
+        self.user_manager = UserManager()
+        self.current_user_id = None
+        
+        # 初始化设备同步系统
+        self.sync_server = SyncServer()
+        self.sync_client = SyncClient()
+        
+        # 初始化视频播放器
+        self.video_player = VideoPlayer()
+        
+        # 初始化频谱可视化
+        self.spectrum_widget = SpectrumWidget()
+        
+        # 初始化速度控制
+        self.speed_control = SpeedControl(self.media_player)
+        
+        # 连接信号
+        self.setup_signals()
+   
         # 设置初始窗口大小
         self.resize(1280, 900)  
         self.playlist_manager = PlaylistManager()
+        self.initial_style_sheet = ""
         # 播放模式（0:顺序播放, 1:随机播放, 2:单曲循环）
         self.play_mode = 0
         # 当前播放索引
@@ -4606,8 +5289,17 @@ class MusicPlayerApp(QMainWindow):
         self.playlist_file = "playlists.json"
         self.ensure_playlist_exists()
         self.load_playlist_on_startup()
+        self.results_list.setAutoFillBackground(True)
+        self.song_info.setAutoFillBackground(True)
+        self.playlist_widget.setAutoFillBackground(True)
+        self.initial_style_sheet = self.styleSheet()
+        # 创建速度控制
+        self.speed_control = SpeedControl(self.media_player)
         
+        # 添加速度控制UI
+        self.setup_speed_control_ui()
         self.room_manager = MusicRoomManager(self)
+
         # 添加音乐室服务器
         self.music_room_server = None
         self.server_thread = None
@@ -4685,6 +5377,58 @@ class MusicPlayerApp(QMainWindow):
         self.network_timer.start(10000)  # 每10秒检测一次
         
         logger.info("应用程序初始化完成")
+
+        self.update_button_states(self.media_player.state())
+
+    def setup_signals(self):
+        # 同步服务器消息
+        self.sync_server.message_received.connect(self.handle_sync_message)
+        
+        # 同步客户端消息
+        self.sync_client.message_received.connect(self.handle_sync_message)
+        
+        # 媒体播放器信号
+        self.media_player.stateChanged.connect(self.on_player_state_changed)
+        self.media_player.positionChanged.connect(self.on_position_changed)
+        self.media_player.volumeChanged.connect(self.on_volume_changed)
+        
+
+    def setup_speed_control_ui(self):
+        # 速度控制工具栏
+        speed_toolbar = QToolBar("速度控制")
+        self.addToolBar(Qt.BottomToolBarArea, speed_toolbar)
+        
+        # 减速按钮
+        slow_down_btn = QPushButton("减速")
+        slow_down_btn.clicked.connect(lambda: self.speed_control.decrease_speed(0.1))
+        speed_toolbar.addWidget(slow_down_btn)
+        
+        # 速度显示
+        self.speed_label = QLabel("1.0x")
+        speed_toolbar.addWidget(self.speed_label)
+        
+        # 加速按钮
+        speed_up_btn = QPushButton("加速")
+        speed_up_btn.clicked.connect(lambda: self.speed_control.increase_speed(0.1))
+        speed_toolbar.addWidget(speed_up_btn)
+        
+        # 重置按钮
+        reset_speed_btn = QPushButton("正常速度")
+        reset_speed_btn.clicked.connect(self.speed_control.reset)
+        speed_toolbar.addWidget(reset_speed_btn)
+        
+        # 速度滑块
+        self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider.setRange(50, 200)  # 0.5x - 2.0x
+        self.speed_slider.setValue(100)  # 1.0x
+        self.speed_slider.valueChanged.connect(self.speed_slider_changed)
+        speed_toolbar.addWidget(self.speed_slider)
+    
+    def speed_slider_changed(self, value):
+        """速度滑块值改变事件"""
+        speed = value / 100.0
+        self.speed_control.set_speed(speed)
+        self.speed_label.setText(f"{speed:.1f}x")
 
     def toggle_music_room_server(self):
         """切换音乐室服务器的启动状态"""
@@ -5184,21 +5928,399 @@ class MusicPlayerApp(QMainWindow):
             QMessageBox.information(self, "登录成功", "欢迎进入音乐室!")
         else:
             QMessageBox.warning(self, "登录失败", "用户名或密码错误")
+
+    def apply_initial_style_sheet(self):
+        """应用初始样式表"""
+        self.setStyleSheet(self.initial_style_sheet)
     
     def init_ui(self):
+        # 创建主布局
         self.setWindowTitle("音乐捕捉器 create bilibili by:Railgun_lover")
-        self.setGeometry(100, 100, 1000, 800)
-        menu_bar = self.menuBar()
-        menu_bar.setStyleSheet("""
-            QMenuBar {
-                background-color: rgba(53, 53, 53, 180);
+        self.setGeometry(100, 100, 1280, 900)
+    
+        # 设置应用样式
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            }
+            QListWidget#resultsList {
+                background-color: rgba(45, 45, 48, 150);  /* 添加透明度 */
+                color: #e0e0e0;
+                border: 1px solid rgba(63, 63, 70, 100);  /* 边框也设为半透明 */
+                border-radius: 4px;
+                alternate-background-color: rgba(55, 55, 58, 150);  /* 交替行颜色 */
+            }
+            QTextEdit#songInfo {
+                background-color: rgba(45, 45, 48, 150);  /* 添加透明度 */
+                color: #e0e0e0;
+                border: 1px solid solid rgba(63, 63, 70, 100);  /* 边框半透明 */
+                border-radius: 4px;
+            }
+            QListWidget#playlistWidget {
+                background-color: rgba(45, 45, 48, 150);  /* 添加透明度 */
+                color: #e0e0e0;
+                border: 1px solid rgba(63, 63, 70, 100);  /* 边框半透明 */
+                border-radius: 4px;
+                alternate-background-color: rgba(55, 55, 58, 150);  /* 交替行颜色 */
+            }
+            QPushButton {
+                background-color: rgba(58, 58, 58, 150);  /* 添加透明度 */
+                color: #e0e0e0;
+                border: 1px solid #5a5a5a;
+                border-radius: 4px;
+                padding: 8px 12px;
+                min-height: 30px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: rgba(74, 74, 74, 180);  /* 添加透明度 */
+                border-color: #6a6a6a;
+            }
+            QPushButton:pressed {
+                background-color: rgba(42, 42, 42, 200);  /* 添加透明度 */
+            }
+            QPushButton#playButton, QPushButton#pauseButton, 
+            QPushButton#stopButton, QPushButton#prevButton, 
+            QPushButton#nextButton {
+                min-width: 80px;
+                font-weight: bold;
+                background-color: rgba(58, 58, 58, 150);  /* 添加透明度 */
+            }
+            QPushButton#toolsButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(58, 90, 152, 150), stop:1 rgba(42, 74, 136, 150));  /* 添加透明度 */
+            }
+            QPushButton#searchButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(74, 122, 74, 150), stop:1 rgba(58, 106, 58, 150));  /* 添加透明度 */
+            }
+            QPushButton#bilibiliButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(219, 68, 83, 150), stop:1 rgba(197, 52, 67, 150));  /* 添加透明度 */
+            }
+            QPushButton#videoButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(155, 89, 182, 150), stop:1 rgba(138, 73, 166, 150));  /* 添加透明度 */
+            }
+            QLineEdit, QTextEdit, QComboBox {
+                background-color: #2d2d30;
+                color: #e0e0e0;
+                border: 1px solid #3f3f46;
+                border-radius: 4px;
+                padding: 6px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QListWidget, QTreeWidget {
+                background-color: #252526;
+                color: #e0e0e0;
+                border: 1px solid #3f3f46;
+                border-radius: 4px;
+                alternate-background-color: #2d2d30;
+            }
+            QListWidget::item:selected, QTreeWidget::item:selected {
+                background-color: #094771;
                 color: white;
             }
-            QMenuBar::item:selected {
-                background-color: rgba(74, 35, 90, 200);
+            QLabel {
+                color: #e0e0e0;
             }
+            QGroupBox {
+                background-color: rgba(45, 45, 48, 150);
+                border: 1px solid rgba(63, 63, 70, 100);  /* 边框半透明 */
+                border-radius: 5px;
+                margin-top: 1.5em;
+                padding-top: 1em;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top center;
+                padding: 0 8px;
+                background-color: #2d2d30;
+                color: #e0e0e0;
+            }
+            QSlider::groove:horizontal {
+                height: 6px;
+                background: #3f3f46;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #e0e0e0;
+                border: 1px solid #5a5a5a;
+                width: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #3a5a98;
+                border-radius: 3px;
+            }
+            QProgressBar {
+                border: 1px solid #3f3f46;
+                border-radius: 3px;
+                text-align: center;
+                background: #252526;
+            }
+            QProgressBar::chunk {
+                background: #3a5a98;
+                border-radius: 2px;
+            }
+            QTabWidget::pane {
+                border: 1px solid #3f3f46;
+                background: #252526;
+                margin: 0;
+            }
+            QTabBar::tab {
+                background: #252526;
+                color: #a0a0a0;
+                padding: 8px 16px;
+                border: 1px solid #3f3f46;
+                border-bottom: none;
+                border-top-left-radius: 5px;
+                border-top-right-radius: 5px;
+            }
+            QTabBar::tab:selected, QTabBar::tab:hover {
+                background: #2d2d30;
+                color: #e0e0e0;
+                border-color: #3f3f46;
+            }
+            QPushButton {
+                min-height: 36px;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 12px;
+                font-weight: 500;
+                transition: all 0.3s ease;
+            }
+            QPushButton:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            }
+            QPushButton:pressed {
+                transform: translateY(1px);
+                box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+            }
+        """)
+        
+        # 创建中央部件
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
+
+        # 保存初始样式表
+        self.initial_style_sheet = self.styleSheet()
+    
+        # 顶部工具栏
+        top_toolbar = QHBoxLayout()
+        top_toolbar.setSpacing(10)
+    
+        # 搜索区域
+        search_layout = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("输入歌曲名称...")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setMinimumHeight(36)
+        self.source_combo = QComboBox()
+        self.source_combo.addItems(get_source_names())
+        self.source_combo.setCurrentText(self.settings["sources"]["active_source"])
+        self.source_combo.setFixedWidth(120)
+        search_button = QPushButton("搜索")
+        search_button.setObjectName("searchButton")
+        search_button.setIcon(QIcon.fromTheme("system-search"))
+        search_button.setCursor(QCursor(Qt.PointingHandCursor))
+        search_button.setMinimumHeight(36)
+    
+        search_layout.addWidget(self.search_input, 5)
+        search_layout.addWidget(self.source_combo, 1)
+        search_layout.addWidget(search_button, 1)
+    
+        # 工具按钮区域
+        tools_layout = QHBoxLayout()
+        tools_layout.setSpacing(8)
+    
+        self.tools_button = QPushButton("工具")
+        self.tools_button.setObjectName("toolsButton")
+        self.tools_button.setIcon(QIcon.fromTheme("applications-utilities"))
+        self.tools_button.setCursor(QCursor(Qt.PointingHandCursor))
+    
+        settings_button = QPushButton("设置")
+        settings_button.setIcon(QIcon.fromTheme("preferences-system"))
+        settings_button.setCursor(QCursor(Qt.PointingHandCursor))
+    
+        log_button = QPushButton("日志")
+        log_button.setIcon(QIcon.fromTheme("text-x-generic"))
+        log_button.setCursor(QCursor(Qt.PointingHandCursor))
+    
+        self.bilibili_audio_button = QPushButton("B站音乐")
+        self.bilibili_audio_button.setObjectName("bilibiliButton")
+        self.bilibili_audio_button.setIcon(QIcon(":/icons/bilibili.png"))
+        self.bilibili_audio_button.setCursor(QCursor(Qt.PointingHandCursor))
+    
+        self.video_button = QPushButton("视频")
+        self.video_button.setObjectName("videoButton")
+        self.video_button.setIcon(QIcon.fromTheme("video-x-generic"))
+        self.video_button.setCursor(QCursor(Qt.PointingHandCursor))
+
+        self.sync_button = QPushButton("设备同步")
+        self.sync_button.setIcon(QIcon.fromTheme("network-server"))
+        self.sync_button.setCursor(QCursor(Qt.PointingHandCursor))
+        self.sync_button.setStyleSheet("""
+            QPushButton {
+                padding: 8px;
+                font-size: 14px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(70, 130, 180, 200), stop:1 rgba(50, 110, 160, 200));
+                color: white;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(90, 150, 200, 220), stop:1 rgba(70, 130, 180, 220));
+            }
+        """)
+        self.sync_button.setToolTip("设备同步服务器")
+        self.sync_button.clicked.connect(self.toggle_sync_server)
+        tools_layout.addWidget(self.sync_button)
+
+        # =============== 音乐室按钮 ===============
+        self.music_room_button = QPushButton("音乐室")
+        self.music_room_button.setIcon(QIcon.fromTheme("view-media-playlist"))
+        self.music_room_button.setCursor(QCursor(Qt.PointingHandCursor))
+        self.music_room_button.setStyleSheet("""
+            QPushButton {
+                padding: 8px;
+                font-size: 14px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(123, 104, 238, 200), stop:1 rgba(103, 84, 218, 200));
+                color: white;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(143, 124, 255, 220), stop:1 rgba(123, 104, 238, 220));
+            }
+        """)
+        self.music_room_button.setToolTip("多人音乐室")
+        self.music_room_button.clicked.connect(self.open_music_room)
+        tools_layout.addWidget(self.music_room_button)
+
+        # =============== 用户登录按钮 ===============
+        self.user_button = QPushButton("登录")
+        self.user_button.setIcon(QIcon.fromTheme("system-users"))
+        self.user_button.setCursor(QCursor(Qt.PointingHandCursor))
+        self.user_button.setStyleSheet("""
+            QPushButton {
+                padding: 8px;
+                font-size: 14px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(60, 179, 113, 200), stop:1 rgba(40, 159, 93, 200));
+                color: white;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(80, 199, 133, 220), stop:1 rgba(60, 179, 113, 220));
+            }
+        """)
+        self.user_button.setToolTip("用户登录")
+        self.user_button.clicked.connect(self.show_login_dialog)
+        tools_layout.addWidget(self.user_button)
+
+        # =============== 音乐室服务器按钮 ===============
+        self.server_button = QPushButton("启动服务器")
+        self.server_button.setIcon(QIcon.fromTheme("network-server-database"))
+        self.server_button.setCursor(QCursor(Qt.PointingHandCursor))
+        self.server_button.setStyleSheet("""
+            QPushButton {
+                padding: 8px;
+                font-size: 14px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(205, 92, 92, 200), stop:1 rgba(185, 72, 72, 200));
+                color: white;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(225, 112, 112, 220), stop:1 rgba(205, 92, 92, 220));
+            }
+        """)
+        self.server_button.setToolTip("启动/停止音乐室服务器")
+        self.server_button.clicked.connect(self.toggle_music_room_server)
+        tools_layout.addWidget(self.server_button)
+        # =============== 睡眠定时器按钮 ===============
+        self.sleep_timer_button = QPushButton("睡眠定时")
+        self.sleep_timer_button.setIcon(QIcon.fromTheme("player-time"))
+        self.sleep_timer_button.setCursor(QCursor(Qt.PointingHandCursor))
+        self.sleep_timer_button.setStyleSheet("""
+            QPushButton {
+                padding: 8px;
+                font-size: 14px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(106, 90, 205, 200), stop:1 rgba(86, 70, 185, 200));
+                color: white;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(126, 110, 225, 220), stop:1 rgba(106, 90, 205, 220));
+            }
+        """)
+        self.sleep_timer_button.setToolTip("设置睡眠定时器")
+        self.sleep_timer_button.clicked.connect(self.open_sleep_timer)
+        tools_layout.addWidget(self.sleep_timer_button)
+
+        # =============== 均衡器按钮 ===============
+        self.equalizer_button = QPushButton("均衡器")
+        self.equalizer_button.setIcon(QIcon.fromTheme("audio-card"))
+        self.equalizer_button.setCursor(QCursor(Qt.PointingHandCursor))
+        self.equalizer_button.setStyleSheet("""
+            QPushButton {
+                padding: 8px;
+                font-size: 14px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(199, 21, 133, 200), stop:1 rgba(179, 1, 113, 200));
+                color: white;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(219, 41, 153, 220), stop:1 rgba(199, 21, 133, 220));
+            }
+        """)
+        self.equalizer_button.setToolTip("音频均衡器设置")
+        self.equalizer_button.clicked.connect(self.open_equalizer)
+        tools_layout.addWidget(self.equalizer_button)
+
+        # =============== 更多功能下拉菜单 ===============
+        self.more_button = QPushButton("更多")
+        self.more_button.setIcon(QIcon.fromTheme("applications-other"))
+        self.more_button.setCursor(QCursor(Qt.PointingHandCursor))
+        self.more_button.setStyleSheet("""
+            QPushButton {
+                padding: 8px;
+                font-size: 14px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(105, 105, 105, 200), stop:1 rgba(85, 85, 85, 200));
+                color: white;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                    stop:0 rgba(125, 125, 125, 220), stop:1 rgba(105, 105, 105, 220));
+            }
+        """)
+        self.more_button.setToolTip("更多功能")
+
+        # 创建下拉菜单
+        self.more_menu = QMenu(self)
+        self.more_menu.setStyleSheet("""
             QMenu {
-                background-color: rgba(53, 53, 53, 200);
+                background-color: rgba(53, 53, 53, 220);
                 color: white;
                 border: 1px solid #555;
             }
@@ -5206,425 +6328,702 @@ class MusicPlayerApp(QMainWindow):
                 background-color: rgba(74, 35, 90, 200);
             }
         """)
-        file_menu = menu_bar.addMenu("文件")
-        menu_bar = self.menuBar()
-        file_menu.setIcon(QIcon.fromTheme("document"))
-        self.tools_menu = menu_bar.addMenu("工具")                
-        sleep_timer_action = QAction("睡眠定时器", self)
-        sleep_timer_action.triggered.connect(self.open_sleep_timer)
-        self.tools_menu.addAction(sleep_timer_action)
-        equalizer_action = QAction("均衡器设置", self)
-        equalizer_action.triggered.connect(self.open_equalizer)
-        self.tools_menu.addAction(equalizer_action)
-        music_server_action = QAction("启动音乐室服务器", self)
-        music_server_action.setCheckable(True)  # 设置为可选中状态
-        music_server_action.triggered.connect(self.toggle_music_room_server)
-        self.tools_menu.addAction(music_server_action) 
-        open_dir_action = QAction(QIcon.fromTheme("folder"), "打开程序目录", self)
-        open_dir_action.setShortcut("Ctrl+O")
-        open_dir_action.triggered.connect(self.open_app_directory)
-        file_menu.addAction(open_dir_action)
-        log_action = QAction(QIcon.fromTheme("text-plain"), "日志控制台", self)
-        log_action.setShortcut("Ctrl+L")
+
+        # 添加菜单项
+        playlist_action = QAction("播放列表管理", self)
+        playlist_action.triggered.connect(self.open_playlist_manager)
+        self.more_menu.addAction(playlist_action)
+
+        adv_playlist_action = QAction("高级播放列表", self)
+        adv_playlist_action.triggered.connect(self.open_advanced_playlist)
+        self.more_menu.addAction(adv_playlist_action)
+
+        lyrics_action = QAction("外置歌词窗口", self)
+        lyrics_action.triggered.connect(self.toggle_lyrics_window)
+        self.more_menu.addAction(lyrics_action)
+
+        log_action = QAction("日志控制台", self)
         log_action.triggered.connect(self.open_log_console)
-        file_menu.addAction(log_action)
-        file_menu.addSeparator()
-        exit_action = QAction(QIcon.fromTheme("application-exit"), "退出", self)
-        exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-        main_widget = QWidget()
-        main_widget.setObjectName("centralWidget")
-        main_layout = QVBoxLayout()
-        main_widget.setLayout(main_layout)
-        self.setCentralWidget(main_widget)
-        self.set_background()
-        toolbar_layout = QHBoxLayout()
-        tools_layout = QHBoxLayout()
-        layout = QVBoxLayout()
-        
-        # 添加服务器状态标签
-        self.server_status_label = QLabel("音乐室服务器: 已停止")
-        self.server_status_label.setStyleSheet("color: #FF5722; font-weight: bold;")
-        layout.addWidget(self.server_status_label)
-        self.tools_button = QPushButton("小工具")
-        self.tools_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(70, 130, 180, 200); color: white; font-weight: bold;")
-        self.tools_button.clicked.connect(self.open_tools_dialog)
+        self.more_menu.addAction(log_action)
+
+        app_dir_action = QAction("打开程序目录", self)
+        app_dir_action.triggered.connect(self.open_app_directory)
+        self.more_menu.addAction(app_dir_action)
+
+        about_action = QAction("关于", self)
+        about_action.triggered.connect(self.show_about_dialog)
+        self.more_menu.addAction(about_action)
+
+        # 设置按钮菜单
+        self.more_button.setMenu(self.more_menu)
+        tools_layout.addWidget(self.more_button)
+
         tools_layout.addWidget(self.tools_button)
-        play_file_button = QPushButton("播放文件")
-        play_file_button.setIcon(QIcon.fromTheme("media-playback-start"))
-        play_file_button.setStyleSheet("""
-            QPushButton {
-                padding: 8px;
-                font-size: 14px;
-                background-color: rgba(46, 139, 87, 200);
-                color: white;
-                font-weight: bold;
-                min-width: 100px;
-            }
-            QPushButton:hover {
-                background-color: rgba(56, 159, 107, 200);
-            }
-        """)
-        play_file_button.setCursor(QCursor(Qt.PointingHandCursor))
-        play_file_button.clicked.connect(self.play_custom_file)
-        tools_layout.addWidget(play_file_button)
-        toolbar_layout.addLayout(tools_layout)
-        search_layout = QHBoxLayout()
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("输入歌曲名称...")
-        self.search_input.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(37, 37, 37, 200);")
-        self.search_input.returnPressed.connect(self.start_search)
-        self.source_combo = QComboBox()
-        self.source_combo.addItems(get_source_names())
-        self.source_combo.setCurrentText(self.settings["sources"]["active_source"])
-        self.source_combo.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(37, 37, 37, 200);")
-        self.source_combo.setFixedWidth(150)
-        search_button = QPushButton("搜索")
-        search_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(74, 35, 90, 200);")
-        search_button.clicked.connect(self.start_search)
-        settings_button = QPushButton("设置")
-        settings_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(74, 35, 90, 200);")
-        settings_button.clicked.connect(self.open_settings)
-        log_button = QPushButton("日志控制台")
-        log_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(70, 130, 180, 200);")
-        log_button.clicked.connect(self.open_log_console)
-        bilibili_audio_button = QPushButton("B站音乐")
-        bilibili_audio_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(219, 68, 83, 200);")
-        bilibili_audio_button.clicked.connect(self.open_bilibili_audio_search)
-        self.music_room_button = QPushButton("音乐室")
-        self.music_room_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(70, 130, 180, 200); color: white; font-weight: bold;")
-        self.music_room_button.clicked.connect(self.open_music_room)
-        tools_layout.addWidget(self.music_room_button)
-        search_layout.addWidget(self.search_input, 5)
-        search_layout.addWidget(self.source_combo, 2)
-        search_layout.addWidget(search_button, 1)
-        search_layout.addWidget(settings_button, 1)
-        search_layout.addWidget(log_button, 1)
-        search_layout.addWidget(bilibili_audio_button, 1)
-        toolbar_layout.addLayout(search_layout)
-        main_layout.addLayout(toolbar_layout)
-        results_layout = QHBoxLayout()
-        results_list_layout = QVBoxLayout()
+        tools_layout.addWidget(settings_button)
+        tools_layout.addWidget(log_button)
+        tools_layout.addWidget(self.bilibili_audio_button)
+        tools_layout.addWidget(self.video_button)
+        tools_layout.addStretch()
+
+        top_toolbar.addLayout(search_layout, 7)
+        top_toolbar.addLayout(tools_layout, 3)
+    
+        main_layout.addLayout(top_toolbar)
+    
+        # 主内容区域
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(15)
+     
+        # 左侧 - 搜索结果区域
+        left_panel = QVBoxLayout()
+        left_panel.setSpacing(10)
+    
         results_label = QLabel("搜索结果")
-        results_label.setStyleSheet("background-color: rgba(53, 53, 53, 180);")
-        results_list_layout.addWidget(results_label)
+        results_label.setStyleSheet("font-size: 16px; font-weight: bold; padding-bottom: 5px;")
+    
+        # 创建results_list并立即设置objectName
         self.results_list = QListWidget()
-        self.results_list.setStyleSheet("font-size: 14px; background-color: rgba(37, 37, 37, 200);")
-        self.results_list.setIconSize(QSize(100, 100))
-        self.results_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.results_list.customContextMenuRequested.connect(self.show_context_menu)
-        self.results_list.itemClicked.connect(self.song_selected)
-        results_list_layout.addWidget(self.results_list)
-        results_layout.addLayout(results_list_layout, 3)
-        details_layout = QVBoxLayout()
-        info_layout = QVBoxLayout()
-        info_label = QLabel("歌曲信息")
-        info_label.setStyleSheet("background-color: rgba(53, 53, 53, 180);")
-        info_layout.addWidget(info_label)
+        self.results_list.setObjectName("resultsList")  # 在这里设置objectName
+        self.results_list.setIconSize(QSize(80, 80))
+        self.results_list.setSpacing(8)
+        self.results_list.setAlternatingRowColors(True)
+        self.results_list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+    
+        left_panel.addWidget(results_label)
+        left_panel.addWidget(self.results_list)
+
+    
+        # 右侧 - 歌曲信息和播放控制
+        right_panel = QVBoxLayout()
+        right_panel.setSpacing(15)
+    
+        # 歌曲信息面板
+        info_group = QGroupBox("歌曲信息")
+        info_layout = QVBoxLayout(info_group)
+    
         self.song_info = QTextEdit()
+        self.song_info.setObjectName("songInfo") 
         self.song_info.setReadOnly(True)
-        self.song_info.setStyleSheet("font-size: 14px; background-color: rgba(37, 37, 37, 200);")
+        self.song_info.setMinimumHeight(180)
         info_layout.addWidget(self.song_info)
-        button_layout = QHBoxLayout()
+    
+        # 下载按钮
+        download_layout = QHBoxLayout()
         self.download_button = QPushButton("下载歌曲")
-        self.download_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(46, 139, 87, 200); color: white; font-weight: bold;")
         self.download_button.setEnabled(False)
-        self.download_button.clicked.connect(self.download_current_song)
-        button_layout.addWidget(self.download_button)
-        info_layout.addLayout(button_layout)
-        control_layout = QHBoxLayout()
+        self.download_button.setIcon(QIcon.fromTheme("folder-download"))
+        download_layout.addWidget(self.download_button)
+        download_layout.addStretch()
+        info_layout.addLayout(download_layout)
+    
+        # 播放控制面板
+        control_group = QGroupBox("播放控制")
+        control_layout = QVBoxLayout(control_group)
+    
+        # 播放按钮行
+        playback_buttons = QHBoxLayout()
         self.prev_button = QPushButton("上一首")
-        self.prev_button.setEnabled(True)
-        self.prev_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(74, 35, 90, 200);")
-        self.prev_button.clicked.connect(self.play_previous)
-        control_layout.addWidget(self.prev_button)
+        self.prev_button.setObjectName("prevButton")
+        self.prev_button.setIcon(QIcon.fromTheme("media-skip-backward"))
+    
         self.play_button = QPushButton("播放")
-        self.play_button.setEnabled(True)
-        self.play_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(74, 35, 90, 200);")
-        self.play_button.clicked.connect(self.play_song)
-        control_layout.addWidget(self.play_button)
+        self.play_button.setObjectName("playButton")
+        self.play_button.setIcon(QIcon.fromTheme("media-playback-start"))
+    
         self.pause_button = QPushButton("暂停")
-        self.pause_button.setEnabled(True)
-        self.pause_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(74, 35, 90, 200);")
-        self.pause_button.clicked.connect(self.pause_song)
-        control_layout.addWidget(self.pause_button)
+        self.pause_button.setObjectName("pauseButton")
+        self.pause_button.setIcon(QIcon.fromTheme("media-playback-pause"))
+    
         self.stop_button = QPushButton("停止")
-        self.stop_button.setEnabled(True)
-        self.stop_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(74, 35, 90, 200);")
-        self.stop_button.clicked.connect(self.stop_song)
-        control_layout.addWidget(self.stop_button)
+        self.stop_button.setObjectName("stopButton")
+        self.stop_button.setIcon(QIcon.fromTheme("media-playback-stop"))
+    
         self.next_button = QPushButton("下一首")
-        self.next_button.setEnabled(True)
-        self.next_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(74, 35, 90, 200);")
-        self.next_button.clicked.connect(self.play_next)
-        control_layout.addWidget(self.next_button)
-        control_layout.addWidget(self.play_button)
-        control_layout.addWidget(self.pause_button)
-        control_layout.addWidget(self.stop_button)
-        info_layout.addLayout(control_layout)
-        details_layout.addLayout(info_layout, 2)
-        results_layout.addLayout(details_layout, 1)
-        playlist_layout = QVBoxLayout()
-        open_playlist_action = QAction(QIcon.fromTheme("folder"), "打开播放列表", self)
-        open_playlist_action.setShortcut("Ctrl+P")
-        open_playlist_action.triggered.connect(self.open_playlist_file)
-        file_menu.addAction(open_playlist_action)
+        self.next_button.setObjectName("nextButton")
+        self.next_button.setIcon(QIcon.fromTheme("media-skip-forward"))
+    
+        playback_buttons.addWidget(self.prev_button)
+        playback_buttons.addWidget(self.play_button)
+        playback_buttons.addWidget(self.pause_button)
+        playback_buttons.addWidget(self.stop_button)
+        playback_buttons.addWidget(self.next_button)
+    
+        # 进度条行
         progress_layout = QVBoxLayout()
-        self.lyrics_button = QPushButton("歌词:关")
-        self.lyrics_button.setCheckable(True)  # 设置为可切换状态
-        self.lyrics_button.setStyleSheet("""
-            QPushButton {
-                padding: 8px;
-                font-size: 14px;
-                background-color: rgba(150, 150, 150, 200);
-                color: white;
-                font-weight: bold;
-            }
-            QPushButton:checked {
-                background-color: rgba(46, 139, 87, 200);
-            }
-            QPushButton:hover {
-                background-color: rgba(170, 170, 170, 200);
-            }
-            QPushButton:checked:hover {
-                background-color: rgba(56, 159, 107, 200);
-            }
-        """)
-        self.lyrics_button.setCursor(QCursor(Qt.PointingHandCursor))
-        self.lyrics_button.clicked.connect(self.toggle_lyrics_window)
-        tools_layout.addWidget(self.lyrics_button)
-
-        # 根据设置初始化按钮状态
-        self.update_lyrics_button_state()
-
+    
         # 时间显示
         time_layout = QHBoxLayout()
         self.current_time_label = QLabel("00:00")
-        self.current_time_label.setStyleSheet("color: white; font-size: 12px;")
+        self.current_time_label.setAlignment(Qt.AlignLeft)
         self.total_time_label = QLabel("00:00")
-        self.total_time_label.setStyleSheet("color: white; font-size: 12px;")
         self.total_time_label.setAlignment(Qt.AlignRight)
-        
         time_layout.addWidget(self.current_time_label)
-        time_layout.addStretch()
         time_layout.addWidget(self.total_time_label)
-        progress_layout.addLayout(time_layout)
-        
+    
         # 进度条
         self.progress_slider = QSlider(Qt.Horizontal)
         self.progress_slider.setRange(0, 1000)
-        self.progress_slider.setStyleSheet("""
-            QSlider::groove:horizontal {
-                border: 1px solid #444;
-                height: 5px;
-                background: rgba(100, 100, 100, 100);
-                margin: 2px 0;
-            }
-            QSlider::handle:horizontal {
-                background: #FF5722;
-                border: 1px solid #444;
-                width: 12px;
-                margin: -4px 0;
-                border-radius: 6px;
-            }
-            QSlider::sub-page:horizontal {
-                background: #FF5722;
-            }
-        """)
-        self.progress_slider.sliderPressed.connect(self.progress_pressed)
-        self.progress_slider.sliderReleased.connect(self.progress_released)
-        self.progress_slider.sliderMoved.connect(self.progress_moved)
+    
+        progress_layout.addLayout(time_layout)
         progress_layout.addWidget(self.progress_slider)
-        
-        # 将进度控制添加到主布局
-        control_layout.addLayout(progress_layout)  # 添加到原有的控制按钮布局中
-        
-        # 新增：音量控制
+     
+        # 音量控制
         volume_layout = QHBoxLayout()
         volume_layout.addWidget(QLabel("音量:"))
         self.volume_slider = QSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(80)
-        self.volume_slider.setFixedWidth(100)
-        self.volume_slider.setStyleSheet("""
-            QSlider::groove:horizontal {
-                border: 1px solid #444;
-                height: 5px;
-                background: rgba(100, 100, 100, 100);
-                margin: 2px 0;
-            }
-            QSlider::handle:horizontal {
-                background: #4A235A;
-                border: 1px solid #444;
-                width: 12px;
-                margin: -4px 0;
-                border-radius: 6px;
-            }
-            QSlider::sub-page:horizontal {
-                background: #4A235A;
-            }
-        """)
-        self.volume_slider.valueChanged.connect(self.set_volume)
+        self.volume_slider.setFixedWidth(120)
         volume_layout.addWidget(self.volume_slider)
+        volume_layout.addStretch()
+    
+        control_layout.addLayout(playback_buttons)
+        control_layout.addLayout(progress_layout)
         control_layout.addLayout(volume_layout)
-
-        
-        # 播放列表栏
-        playlist_header = QWidget()
-        playlist_header_layout = QHBoxLayout(playlist_header)
-        playlist_label = QLabel("播放列表")
-        playlist_label.setStyleSheet("font-weight: bold; font-size: 16px; color: #FF5722;")
-        playlist_header_layout.addWidget(playlist_label)
-        playlist_header_layout.addStretch()
-        
-        # 操作按钮
-        clear_button = QPushButton("清空")
-        clear_button.setFixedSize(60, 25)
-        clear_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(74, 35, 90, 200);
-                color: white;
-                border-radius: 3px;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: rgba(94, 55, 110, 200);
-            }
-        """)
-        clear_button.clicked.connect(self.clear_playlist)
     
-        save_button = QPushButton("保存")
-        save_button.setFixedSize(60, 25)
-        save_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(46, 139, 87, 200);
-                color: white;
-                border-radius: 3px;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: rgba(66, 159, 107, 200);
-            }
-       """)
-        save_button.clicked.connect(self.save_playlist)
-    
-        playlist_header_layout.addWidget(clear_button)
-        playlist_header_layout.addWidget(save_button)
-        playlist_header_layout.setContentsMargins(5, 5, 5, 5)
-    
-        playlist_layout.addWidget(playlist_header)
-        
-         # 播放列表控件
-        self.playlist_widget = QListWidget()
-        self.playlist_widget.setStyleSheet("""
-            QListWidget {
-                background-color: rgba(37, 37, 37, 200);
-                border: 1px solid #555;
-                font-size: 14px;
-            }
-            QListWidget::item {
-                padding: 8px;
-                border-bottom: 1px solid #444;
-            }
-            QListWidget::item:selected {
-                background-color: rgba(74, 35, 90, 200);
+        # 歌词按钮
+        self.lyrics_button = QPushButton("显示歌词")
+        self.lyrics_button.setCheckable(True)
+        self.lyrics_button.setIcon(QIcon.fromTheme("text-plain"))
+        self.lyrics_button.setStyleSheet("""
+            QPushButton:checked {
+                background-color: #4a7a4a;
                 color: white;
             }
         """)
-        self.playlist_widget.setAlternatingRowColors(True)
-        self.playlist_widget.setIconSize(QSize(40, 40))
-        self.playlist_widget.setSpacing(2)
-        self.playlist_widget.itemDoubleClicked.connect(self.play_playlist_item)
-        
-        # 右键菜单
-        self.playlist_widget.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.playlist_widget.customContextMenuRequested.connect(self.show_playlist_menu)
-        
-        playlist_layout.addWidget(self.playlist_widget, 1)
-        
-        # 播放控制按钮
-        playlist_controls = QWidget()
-        playlist_controls_layout = QHBoxLayout(playlist_controls)
-        
-        # 播放模式选择
+    
+        # 播放列表区域
+        playlist_group = QGroupBox("播放列表")
+        playlist_layout = QVBoxLayout(playlist_group)
+    
+        # 播放列表控制按钮
+        playlist_controls = QHBoxLayout()
         self.play_mode_combo = QComboBox()
         self.play_mode_combo.addItems(["顺序播放", "随机播放", "单曲循环"])
-        self.play_mode_combo.setStyleSheet("""
-            QComboBox {
-                background-color: rgba(53, 53, 53, 200);
-                color: white;
-                padding: 5px;
-                border: 1px solid #555;
-                border-radius: 3px;
-                font-size: 12px;
-            }
-            QComboBox::drop-down {
-                border: none;
-            }
-        """)
-        self.play_mode_combo.setFixedWidth(90)
-        self.play_mode_combo.currentIndexChanged.connect(self.change_play_mode)
-        playlist_controls_layout.addWidget(self.play_mode_combo)
-        
-        # 控制按钮
-        prev_button = QPushButton()
-        prev_button.setIcon(QIcon.fromTheme("media-skip-backward"))
-        prev_button.setFixedSize(30, 30)
-        prev_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(74, 35, 90, 200);
-                border-radius: 15px;
-            }
-            QPushButton:hover {
-                background-color: rgba(94, 55, 110, 200);
-            }
-        """)
-        prev_button.clicked.connect(self.play_previous)
-        
-        play_button = QPushButton()
-        play_button.setIcon(QIcon.fromTheme("media-playback-start"))
-        play_button.setFixedSize(40, 40)
-        play_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(219, 68, 83, 200);
-                border-radius: 20px;
-            }
-            QPushButton:hover {
-                background-color: rgba(239, 88, 103, 200);
-            }
-        """)
-        play_button.clicked.connect(self.play_song)
-        
-        next_button = QPushButton()
-        next_button.setIcon(QIcon.fromTheme("media-skip-forward"))
-        next_button.setFixedSize(30, 30)
-        next_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(74, 35, 90, 200);
-                border-radius: 15px;
-            }
-            QPushButton:hover {
-                background-color: rgba(94, 55, 110, 200);
-            }
-        """)
-        next_button.clicked.connect(self.play_next)
-        
-        playlist_controls_layout.addStretch()
-        playlist_controls_layout.addWidget(prev_button)
-        playlist_controls_layout.addWidget(play_button)
-        playlist_controls_layout.addWidget(next_button)
-        playlist_controls_layout.addStretch()
-        
-        playlist_layout.addWidget(playlist_controls)
-        results_layout.addLayout(playlist_layout, 1)  # 占比1
-        
-        main_layout.addLayout(results_layout, 5)
+        self.play_mode_combo.setFixedWidth(120)
+    
+        clear_button = QPushButton("清空")
+        clear_button.setIcon(QIcon.fromTheme("edit-clear"))
+    
+        save_button = QPushButton("保存")
+        save_button.setIcon(QIcon.fromTheme("document-save"))
+    
+        playlist_controls.addWidget(QLabel("播放模式:"))
+        playlist_controls.addWidget(self.play_mode_combo)
+        playlist_controls.addStretch()
+        playlist_controls.addWidget(clear_button)
+        playlist_controls.addWidget(save_button)
+    
+        # 播放列表内容
+        self.playlist_widget = QListWidget()
+        self.playlist_widget.setObjectName("playlistWidget") 
+        self.playlist_widget.setAlternatingRowColors(True)
+        self.playlist_widget.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+    
+        playlist_layout.addLayout(playlist_controls)
+        playlist_layout.addWidget(self.playlist_widget)
+     
+        # 将组件添加到右侧面板
+        right_panel.addWidget(info_group)
+        right_panel.addWidget(control_group)
+        right_panel.addWidget(self.lyrics_button)
+        right_panel.addWidget(playlist_group)
+    
+        # 将左右面板添加到内容布局
+        content_layout.addLayout(left_panel, 6)
+        content_layout.addLayout(right_panel, 4)
+    
+        main_layout.addLayout(content_layout)
+    
+        # 状态栏
+        self.status_bar = QStatusBar()
+        self.status_bar.setStyleSheet("background-color: #252526; color: #a0a0a0;")
+        self.setStatusBar(self.status_bar)
 
-        main_layout.addLayout(results_layout, 5)
-        self.status_bar = self.statusBar()
-        self.status_bar.setStyleSheet("background-color: rgba(53, 53, 53, 180);")
+        # 服务器状态指示器
+        self.server_status_label = QLabel("服务器: 离线")
+        self.server_status_label.setStyleSheet("color: #FF6B6B;")
+        self.status_bar.addPermanentWidget(self.server_status_label)
+
+        # 添加分隔线
+        self.status_bar.addPermanentWidget(QLabel("|"), 1)
+
+        # 音乐室状态指示器
+        self.room_status_label = QLabel("音乐室: 未连接")
+        self.room_status_label.setStyleSheet("color: #FFD93D;")
+        self.status_bar.addPermanentWidget(self.room_status_label)
+    
+        # 添加分隔线元素
+        self.status_bar.addPermanentWidget(QLabel("|"), 1)
+    
+        # 网络状态指示器
+        network_status = QLabel("网络: 正常")
+        network_status.setPixmap(QIcon.fromTheme("network-wireless").pixmap(16, 16))
+        self.status_bar.addPermanentWidget(network_status, 1)
+    
+        # 添加分隔线元素
+        self.status_bar.addPermanentWidget(QLabel("|"), 1)
+    
+        # 播放状态指示器
+        self.play_status = QLabel("就绪")
+        self.status_bar.addPermanentWidget(self.play_status, 3)
+    
+        # 添加分隔线元素
+        self.status_bar.addPermanentWidget(QLabel("|"), 1)
+    
+        # 时间显示
+        time_label = QLabel()
+        time_label.setText(datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
+        self.status_bar.addPermanentWidget(time_label, 2)
+    
+        # 更新时间的定时器
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(lambda: time_label.setText(datetime.datetime.now().strftime("%Y-%m-%d %H:%M")))
+        self.timer.start(60000)  # 每分钟更新一次
+    
+        # 连接信号
         search_button.clicked.connect(self.start_search)
+        settings_button.clicked.connect(self.open_settings)
+        log_button.clicked.connect(self.open_log_console)
+        self.bilibili_audio_button.clicked.connect(self.open_bilibili_audio_search)
+        self.video_button.clicked.connect(self.open_video_player)
+        self.tools_button.clicked.connect(self.open_tools_dialog)
+        self.download_button.clicked.connect(self.download_current_song)
+        self.prev_button.clicked.connect(self.play_previous)
+        self.play_button.clicked.connect(self.play_song)
+        self.pause_button.clicked.connect(self.pause_song)
+        self.stop_button.clicked.connect(self.stop_song)
+        self.next_button.clicked.connect(self.play_next)
+        self.lyrics_button.clicked.connect(self.toggle_lyrics_window)
+        clear_button.clicked.connect(self.clear_playlist)
+        save_button.clicked.connect(self.save_playlist)
+        self.results_list.itemClicked.connect(self.song_selected)
+        self.playlist_widget.itemDoubleClicked.connect(self.play_playlist_item)
+        self.set_background()
+
+    def toggle_sync_server(self):
+        """切换设备同步服务器状态"""
+        if not hasattr(self, 'remote_server'):
+            self.remote_server = self.RemoteControlServer(self)
+            self.remote_server.start()
+            self.sync_button.setText("停止同步")
+            self.status_bar.showMessage("设备同步服务器已启动")
+        else:
+            self.remote_server.stop()
+            self.sync_button.setText("设备同步")
+            self.status_bar.showMessage("设备同步服务器已停止")
+            del self.remote_server
+
+    def open_music_room(self):
+        """打开音乐室对话框"""
+        if not hasattr(self, 'music_room_dialog') or not self.music_room_dialog:
+            self.music_room_dialog = MusicRoomDialog(self)
+        self.music_room_dialog.show()
+        self.music_room_dialog.activateWindow()
+
+    def show_login_dialog(self):
+        """显示用户登录对话框"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("用户登录")
+        layout = QVBoxLayout()
+    
+        form_layout = QFormLayout()
+    
+        username_edit = QLineEdit()
+        password_edit = QLineEdit()
+        password_edit.setEchoMode(QLineEdit.Password)
+    
+        form_layout.addRow("用户名:", username_edit)
+        form_layout.addRow("密码:", password_edit)
+    
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(lambda: self.handle_login(
+            username_edit.text(), password_edit.text(), dialog))
+        button_box.rejected.connect(dialog.reject)
+    
+        layout.addLayout(form_layout)
+        layout.addWidget(button_box)
+        dialog.setLayout(layout)
+        dialog.exec_()
+
+    def handle_login(self, username, password, dialog):
+        """处理登录请求"""
+        # 这里添加实际的登录验证逻辑
+        if username and password:
+            self.current_user = username
+            self.user_button.setText(f"用户: {username}")
+            self.status_bar.showMessage(f"欢迎回来，{username}")
+            dialog.accept()
+        else:
+            QMessageBox.warning(dialog, "登录失败", "用户名或密码不能为空")
+
+    def toggle_music_room_server(self):
+        """切换音乐室服务器的启动状态"""
+        if not hasattr(self, 'music_room_server') or not self.music_room_server:
+            self.start_music_room_server()
+            self.server_button.setText("停止服务器")
+            self.status_bar.showMessage("音乐室服务器已启动")
+        else:
+            self.stop_music_room_server()
+            self.server_button.setText("启动服务器")
+            self.status_bar.showMessage("音乐室服务器已停止")
+
+    def open_playlist_manager(self):
+        """打开播放列表管理对话框"""
+        dialog = PlaylistDialog(self.playlist_manager, self)
+        dialog.exec_()
+
+    def open_advanced_playlist(self):
+        """打开高级播放列表对话框"""
+        dialog = AdvancedPlaylistDialog(self.playlist_manager)
+        dialog.exec_()
+
+    def open_app_directory(self):
+        """打开程序所在目录"""
+        app_path = os.path.dirname(os.path.abspath(__file__))
+        try:
+            if sys.platform == "win32":
+                os.startfile(app_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", app_path])
+            else:
+                subprocess.Popen(["xdg-open", app_path])
+            logger.info(f"已打开程序目录: {app_path}")
+        except Exception as e:
+            logger.error(f"打开程序目录失败: {str(e)}")
+            QMessageBox.critical(self, "错误", f"无法打开程序目录:\n{str(e)}")
+
+    def show_about_dialog(self):
+        """显示关于对话框"""
+        about_text = (
+            "<h3>音乐捕捉器</h3>"
+            "<p>版本: 2.0</p>"
+            "<p>作者: Railgun_lover</p>"
+            "<p>这是一个功能强大的音乐播放和管理软件，支持多种音源搜索、下载和播放。</p>"
+            "<p>项目开源地址: <a href='https://github.com/MISAKAMIYO/Music_Player'>GitHub</a></p>"
+        )
+        QMessageBox.about(self, "关于", about_text)
+
+    def open_video_player(self):
+        """打开视频播放对话框"""
+        # 创建新的视频播放器实例
+        video_player = VideoPlayer(self)
+    
+        # 创建视频播放对话框
+        video_dialog = QDialog(self)
+        video_dialog.setWindowTitle("视频播放器")
+        video_dialog.setGeometry(100, 100, 800, 600)
+    
+        layout = QVBoxLayout(video_dialog)
+    
+        # 添加视频播放控件
+        layout.addWidget(video_player)
+    
+        # 添加控制按钮
+        control_layout = QHBoxLayout()
+    
+        open_button = QPushButton("打开视频")
+        open_button.clicked.connect(lambda: self.open_video_file(video_player))
+        control_layout.addWidget(open_button)
+    
+        play_button = QPushButton("播放")
+        play_button.clicked.connect(video_player.play_video)
+        control_layout.addWidget(play_button)
+    
+        stop_button = QPushButton("停止")
+        stop_button.clicked.connect(video_player.stop_video)
+        control_layout.addWidget(stop_button)
+    
+        layout.addLayout(control_layout)
+    
+        # 全屏按钮
+        fullscreen_button = QPushButton("全屏")
+        fullscreen_button.clicked.connect(video_player.toggle_fullscreen)
+        layout.addWidget(fullscreen_button)
+    
+        video_dialog.exec_()
+    
+    def open_video_file(self, video_player):
+        """打开视频文件"""
+        settings = load_settings()
+        video_dir = settings["save_paths"].get("videos", os.path.join(os.path.expanduser("~"), "Videos"))
+    
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择视频文件",
+            video_dir,
+            "视频文件 (*.mp4 *.avi *.mov *.mkv)"
+        )
+    
+        if file_path:
+            video_player.load_video(file_path)
+            self.video_status_label.setText("视频: 已加载")
+            logger.info(f"已加载视频: {os.path.basename(file_path)}")
+    
+    def toggle_video_fullscreen(self):
+        """切换视频全屏模式"""
+        if hasattr(self, 'video_dialog') and self.video_dialog:
+            if self.video_dialog.isFullScreen():
+                self.video_dialog.showNormal()
+                self.video_player.video_widget.setFullScreen(False)
+            else:
+                self.video_dialog.showFullScreen()
+                self.video_player.video_widget.setFullScreen(True)
+
+    def setup_sync_ui(self):
+        """设置设备同步UI"""
+        sync_toolbar = QToolBar("设备同步")
+        self.addToolBar(Qt.TopToolBarArea, sync_toolbar)
+        
+        # 服务器控制
+        self.server_status_btn = QPushButton("启动服务器")
+        self.server_status_btn.setCheckable(True)
+        self.server_status_btn.clicked.connect(self.toggle_server)
+        sync_toolbar.addWidget(self.server_status_btn)
+        
+        # 客户端控制
+        self.client_status_btn = QPushButton("连接设备")
+        self.client_status_btn.setCheckable(True)
+        self.client_status_btn.clicked.connect(self.toggle_client)
+        sync_toolbar.addWidget(self.client_status_btn)
+        
+        # IP地址显示
+        self.ip_label = QLabel("")
+        sync_toolbar.addWidget(self.ip_label)
+        
+        # 更新IP显示
+        self.update_ip_display()
+    
+    def setup_user_menu(self):
+        """设置用户菜单"""
+        user_menu = self.menuBar().addMenu("用户")
+        
+        login_action = QAction("登录", self)
+        login_action.triggered.connect(self.show_login)
+        user_menu.addAction(login_action)
+        
+        register_action = QAction("注册", self)
+        register_action.triggered.connect(self.show_register)
+        user_menu.addAction(register_action)
+        
+        logout_action = QAction("注销", self)
+        logout_action.triggered.connect(self.logout)
+        user_menu.addAction(logout_action)
+        
+        # 默认禁用注销按钮
+        logout_action.setEnabled(False)
+        self.logout_action = logout_action
+    
+    def toggle_server(self, checked):
+        """切换服务器状态"""
+        if checked:
+            self.sync_server.start()
+            self.server_status_btn.setText("停止服务器")
+        else:
+            self.sync_server.stop()
+            self.server_status_btn.setText("启动服务器")
+    
+    def toggle_client(self, checked):
+        """切换客户端状态"""
+        if checked:
+            # 在实际应用中，这里应该弹出对话框让用户输入服务器IP
+            if self.sync_client.connect_to_server("127.0.0.1", 5002):
+                self.client_status_btn.setText("断开连接")
+            else:
+                self.client_status_btn.setChecked(False)
+        else:
+            self.sync_client.disconnect()
+            self.client_status_btn.setText("连接设备")
+    
+    def update_ip_display(self):
+        """更新IP地址显示"""
+        try:
+            hostname = socket.gethostname()
+            ip = socket.gethostbyname(hostname)
+            self.ip_label.setText(f"本机IP: {ip}")
+        except:
+            self.ip_label.setText("无法获取IP")
+    
+    def handle_sync_message(self, message):
+        """处理同步消息"""
+        msg_type = message.get('type')
+        
+        if msg_type == 'sync':
+            # 处理同步命令
+            command = message.get('command')
+            if command == 'play':
+                self.media_player.play()
+            elif command == 'pause':
+                self.media_player.pause()
+            elif command == 'stop':
+                self.media_player.stop()
+            elif command == 'volume':
+                self.media_player.setVolume(message.get('value'))
+            elif command == 'seek':
+                self.media_player.setPosition(message.get('position'))
+            elif command == 'load':
+                file_path = message.get('file_path')
+                if os.path.exists(file_path):
+                    if file_path.endswith(('.mp4', '.avi', '.mov')):
+                        self.play_video(file_path)
+                    else:
+                        self.play_audio(file_path)
+        
+        elif msg_type == 'server_status':
+            self.status_bar.showMessage(message.get('message'))
+        
+        elif msg_type == 'error':
+            self.status_bar.showMessage(f"错误: {message.get('message')}")
+    
+    def play_video(self, file_path):
+        """播放视频文件"""
+        if os.path.exists(file_path):
+            # 显示视频容器
+            self.video_container.show()
+            
+            # 加载视频
+            self.video_player.load_video(file_path)
+            
+            # 同步到其他设备
+            self.sync_client.send_message({
+                'type': 'sync',
+                'command': 'load',
+                'file_path': file_path
+            })
+    
+    def on_player_state_changed(self, state):
+        """播放状态改变时发送同步消息"""
+        if state == QMediaPlayer.PlayingState:
+            self.sync_client.send_message({
+                'type': 'sync',
+                'command': 'play'
+            })
+        elif state == QMediaPlayer.PausedState:
+            self.sync_client.send_message({
+                'type': 'sync',
+                'command': 'pause'
+            })
+        elif state == QMediaPlayer.StoppedState:
+            self.sync_client.send_message({
+                'type': 'sync',
+                'command': 'stop'
+            })
+    
+    def on_position_changed(self, position):
+        """播放位置改变时发送同步消息"""
+        # 每500ms发送一次位置更新，避免过于频繁
+        if hasattr(self, 'last_position_time') and time.time() - self.last_position_time < 0.5:
+            return
+            
+        self.last_position_time = time.time()
+        self.sync_client.send_message({
+            'type': 'sync',
+            'command': 'seek',
+            'position': position
+        })
+    
+    def on_volume_changed(self, volume):
+        """音量改变时发送同步消息"""
+        self.sync_client.send_message({
+            'type': 'sync',
+            'command': 'volume',
+            'value': volume
+        })
+    
+    def show_login(self):
+        """显示登录对话框"""
+        dialog = LoginDialog(self.user_manager, self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.current_user_id = dialog.user_id
+            self.status_bar.showMessage(f"欢迎回来，{dialog.username_edit.text()}")
+            self.logout_action.setEnabled(True)
+            
+            # 加载用户设置
+            self.load_user_settings()
+    
+    def show_register(self):
+        """显示注册对话框"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("用户注册")
+        layout = QFormLayout()
+        
+        username_edit = QLineEdit()
+        password_edit = QLineEdit()
+        password_edit.setEchoMode(QLineEdit.Password)
+        email_edit = QLineEdit()
+        
+        layout.addRow("用户名:", username_edit)
+        layout.addRow("密码:", password_edit)
+        layout.addRow("邮箱:", email_edit)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(lambda: self.register_user(
+            dialog, username_edit.text(), password_edit.text(), email_edit.text()
+        ))
+        button_box.rejected.connect(dialog.reject)
+        
+        layout.addWidget(button_box)
+        dialog.setLayout(layout)
+        dialog.exec_()
+    
+    def register_user(self, dialog, username, password, email):
+        """注册新用户"""
+        if not username or not password:
+            QMessageBox.warning(dialog, "错误", "用户名和密码不能为空")
+            return
+            
+        if self.user_manager.register_user(username, password, email):
+            QMessageBox.information(dialog, "成功", "注册成功！")
+            dialog.accept()
+        else:
+            QMessageBox.warning(dialog, "错误", "用户名已存在")
+    
+    def logout(self):
+        """用户注销"""
+        self.current_user_id = None
+        self.status_bar.showMessage("已注销")
+        self.logout_action.setEnabled(False)
+    
+    def load_user_settings(self):
+        """加载用户设置"""
+        if not self.current_user_id:
+            return
+            
+        settings = self.user_manager.get_user_settings(self.current_user_id)
+        if settings:
+            last_played, volume = settings
+            if volume is not None:
+                self.media_player.setVolume(volume)
+            
+            # 加载最后播放的歌曲
+            if last_played and os.path.exists(last_played):
+                if last_played.endswith(('.mp4', '.avi', '.mov')):
+                    self.play_video(last_played)
+                else:
+                    self.play_audio(last_played)
+    
+    def save_user_settings(self):
+        """保存用户设置"""
+        if not self.current_user_id:
+            return
+            
+        self.user_manager.save_user_settings(
+            self.current_user_id,
+            last_played=self.current_file_path,
+            volume=self.media_player.volume()
+        )
+    
+    def closeEvent(self, event):
+        """关闭应用程序时保存设置"""
+        self.save_user_settings()
+        
+        # 停止同步服务器和客户端
+        if self.sync_server.running:
+            self.sync_server.stop()
+        if self.sync_client.running:
+            self.sync_client.disconnect()
+        
+        super().closeEvent(event)
 
     def toggle_lyrics_window(self):
         """切换歌词窗口的显示状态"""
@@ -5819,9 +7218,6 @@ class MusicPlayerApp(QMainWindow):
         logger.info(f"已添加到播放列表: {song_name}")
         self.save_playlist_to_json()
 
-
-    
-    
     def save_playlist_to_json(self):
         """保存播放列表到JSON文件"""
         try:
@@ -6391,8 +7787,10 @@ class MusicPlayerApp(QMainWindow):
         search_dialog.exec_()
         
     def set_background(self):
+        """设置背景图片，但保留内部组件的半透明效果"""
         bg_image = self.settings.get("background_image", "")
         if bg_image and os.path.exists(bg_image):
+            # 只设置主窗口背景，不影响内部组件
             self.setStyleSheet(f"""
                 QMainWindow {{
                     background-image: url({bg_image});
@@ -6400,7 +7798,34 @@ class MusicPlayerApp(QMainWindow):
                     background-repeat: no-repeat;
                     background-attachment: fixed;
                 }}
+            
+                /* 重新应用内部组件的半透明样式 */
+                QListWidget#resultsList {{
+                    background-color: rgba(45, 45, 48, 150);
+                    color: #e0e0e0;
+                    border: 1px solid rgba(63, 63, 70, 100);
+                    border-radius: 4px;
+                    alternate-background-color: rgba(55, 55, 58, 150);
+                }}
+            
+                QTextEdit#songInfo {{
+                    background-color: rgba(45, 45, 48, 150);
+                    color: #e0e0e0;
+                    border: 1px solid rgba(63, 63, 70, 100);
+                    border-radius: 4px;
+                }}
+            
+                QListWidget#playlistWidget {{
+                    background-color: rgba(45, 45, 48, 150);
+                    color: #e0e0e0;
+                    border: 1px solid rgba(63, 63, 70, 100);
+                    border-radius: 4px;
+                    alternate-background-color: rgba(55, 55, 58, 150);
+                }}
             """)
+        else:
+            # 如果没有背景图片，则恢复初始样式
+            self.apply_initial_style_sheet()
     
     def show_context_menu(self, pos):
         item = self.results_list.itemAt(pos)
@@ -6659,15 +8084,23 @@ class MusicPlayerApp(QMainWindow):
         self.current_song_info = details
 
     def handle_player_state_changed(self, state):
-        """处理播放状态变化（重写以支持音乐室同步）"""
+        """处理播放状态变化"""
+        if state == QMediaPlayer.PlayingState:
+            self.play_status.setText("播放中")
+        elif state == QMediaPlayer.PausedState:
+            self.play_status.setText("已暂停")
+        elif state == QMediaPlayer.StoppedState:
+            self.play_status.setText("已停止")
+    
+        # 原有逻辑保持不变
         if self.room_manager.current_room:
             if state == QMediaPlayer.PlayingState:
-                self.room_manager.send_playback_command("播放")
+                self.room_manager.send_playback_command("play")
             elif state == QMediaPlayer.PausedState:
-                self.room_manager.send_playback_command("暂停")
+                self.room_manager.send_playback_command("pause")
             elif state == QMediaPlayer.StoppedState:
-                self.room_manager.send_playback_command("停止")
-    
+                self.room_manager.send_playback_command("stop")
+
     def play_next_song(self):
         if not self.playlist:
             return
@@ -6797,15 +8230,18 @@ class MusicPlayerApp(QMainWindow):
     def play_song(self):
         if self.current_song_path:
             self.media_player.play()
+            self.play_status.setText("播放中") 
             self.status_bar.showMessage("播放中...")
 
     def pause_song(self):
         if self.media_player.state() == QMediaPlayer.PlayingState:
             self.media_player.pause()
+            self.play_status.setText("已暂停")
             self.status_bar.showMessage("已暂停")
 
     def stop_song(self):
         self.media_player.stop()
+        self.play_status.setText("已停止")
         self.status_bar.showMessage("已停止")
 
     @staticmethod
@@ -6972,21 +8408,29 @@ class MusicPlayerApp(QMainWindow):
     
     def event(self, event):
         """处理自定义事件"""
-        if isinstance(event, PlayEvent):
-            self.play_song()
-        elif isinstance(event, PauseEvent):
-            self.pause_song()
-        elif isinstance(event, StopEvent):
-            self.stop_song()
-        elif isinstance(event, VolumeEvent):
-            self.media_player.setVolume(event.volume)
-        elif isinstance(event, NextEvent):
-            self.play_next()
-        elif isinstance(event, PrevEvent):
-            self.play_previous()
-        elif isinstance(event, PlayFileEvent):
-            self.play_file_remote(event.file_path)
-        return super().event(event)
+        try:
+            if isinstance(event, PlayEvent):
+                self.play_song()
+            elif isinstance(event, PauseEvent):
+                self.pause_song()
+            elif isinstance(event, StopEvent):
+                self.stop_song()
+            elif isinstance(event, VolumeEvent):
+                self.media_player.setVolume(event.volume)
+            elif isinstance(event, NextEvent):
+                self.play_next()
+            elif isinstance(event, PrevEvent):
+                self.play_previous()
+            elif isinstance(event, PlayFileEvent):
+                self.play_file_remote(event.file_path)
+            return super().event(event)
+        except KeyboardInterrupt:
+            # 优雅地处理键盘中断
+            self.close()
+            return True
+        except Exception as e:
+            logger.error(f"处理事件时发生错误: {str(e)}")
+            return super().event(event)
     
     def get_remote_status(self):
         """获取当前播放状态"""
@@ -7065,9 +8509,20 @@ class MusicPlayerApp(QMainWindow):
     
     def update_network_status(self):
         """更新网络状态显示"""
-        ip = self.get_ip_address()
-        port = self.remote_server.port
-        self.remote_button.setToolTip(f"手机访问: http://{ip}:{port}")
+        try:
+            # 确保remote_server已初始化
+            if hasattr(self, 'remote_server') and self.remote_server:
+                ip = self.get_ip_address()
+                port = self.remote_server.port
+                self.remote_button.setToolTip(f"手机访问: http://{ip}:{port}")
+            else:
+                self.remote_button.setToolTip("远程服务器未启动")
+        except KeyboardInterrupt:
+            # 优雅地处理键盘中断
+            logger.info("捕获到键盘中断，关闭应用程序")
+            self.close()
+        except Exception as e:
+            logger.error(f"更新网络状态时出错: {str(e)}")
     
     def show_remote_options(self):
         """显示遥控选项菜单"""
