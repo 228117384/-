@@ -5282,8 +5282,8 @@ class MusicPlayerApp(QMainWindow):
         self.create_necessary_dirs()  
         self.netease_worker = NetEaseWorker()  # 网易云专用worker
         self.setup_netease_connections()  # 连接网易云信号
-        self.setup_connections()
         self.init_ui()
+        self.setup_connections()
         self.media_player.mediaStatusChanged.connect(self.handle_media_status_changed)
         logger.info("应用程序启动")
         self.playlist_file = "playlists.json"
@@ -5672,44 +5672,78 @@ class MusicPlayerApp(QMainWindow):
             QMessageBox.critical(self, "错误", f"无法打开程序目录:\n{str(e)}")
             
     def play_custom_file(self):
+        """播放用户选择的本地文件，支持多文件选择和歌词加载"""
         settings = load_settings()
         music_dir = settings["save_paths"]["music"]
-        file_path, _ = QFileDialog.getOpenFileName(
+    
+        # 选择多个文件（支持音频和歌词）
+        file_paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "选择音频文件",
+            "选择音频文件或歌词文件",
             music_dir,
-            "音频文件 (*.mp3 *.wav *.flac *.m4a);;所有文件 (*.*)"
+            "音频文件 (*.mp3 *.wav *.flac *.m4a);;歌词文件 (*.lrc);;所有文件 (*.*)"
         )
-        if not file_path:
+    
+        if not file_paths:
             return
-        if file_path.endswith('.lrc'):
+    
+        audio_files = []
+        lyric_file = None
+    
+        # 分离音频文件和歌词文件
+        for path in file_paths:
+            if path.lower().endswith('.lrc'):
+                lyric_file = path  # 记录最后一个歌词文件
+            else:
+                audio_files.append(path)
+    
+        # 处理歌词文件
+        if lyric_file:
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
+                with open(lyric_file, 'r', encoding='utf-8') as f:
                     lyrics = f.read()
                     self.lyrics_sync.load_lyrics(lyrics)
-                return
             except Exception as e:
                 logger.error(f"加载歌词失败: {str(e)}")
-                QMessageBox.warning(self, "错误", f"无法加载歌词文件:\n{str(e)}")
-                return
-        try:
-            if self.media_player.state() == QMediaPlayer.PlayingState:
-                self.media_player.stop()
-            self.current_song_path = file_path
-            self.media_player.setMedia(QMediaContent(QUrl.fromLocalFile(file_path)))
-            self.media_player.play()
-            filename = os.path.basename(file_path)
-            self.status_bar.showMessage(f"正在播放: {filename}")
-            self.song_info.setText(f"<b>正在播放:</b> {filename}")
-            self.external_lyrics.update_lyrics("")
-            self.play_button.setEnabled(True)
-            self.pause_button.setEnabled(True)
-            self.stop_button.setEnabled(True)
-            logger.info(f"播放文件: {file_path}")
-        except Exception as e:
-            logger.error(f"播放文件失败: {str(e)}")
-            QMessageBox.critical(self, "播放错误", f"无法播放文件:\n{str(e)}")
-        self.add_to_playlist(file_path)
+                QMessageBox.warning(self, "歌词错误", f"无法加载歌词文件:\n{str(e)}")
+    
+        # 处理音频文件
+        if audio_files:
+            for file_path in audio_files:
+                self.add_to_playlist(file_path)
+            # 播放第一个音频文件
+            first_audio = audio_files[0]
+            try:
+                if self.media_player.state() == QMediaPlayer.PlayingState:
+                    self.media_player.stop()
+            
+                self.current_song_path = first_audio
+                self.media_player.setMedia(QMediaContent(QUrl.fromLocalFile(first_audio)))
+                self.media_player.play()
+            
+                filename = os.path.basename(first_audio)
+                self.status_bar.showMessage(f"正在播放: {filename}")
+                self.song_info.setText(f"<b>正在播放:</b> {filename}")
+            
+                self.play_button.setEnabled(True)
+                self.pause_button.setEnabled(True)
+                self.stop_button.setEnabled(True)
+                logger.info(f"播放文件: {first_audio}")
+
+                # 设置当前歌曲信息
+                self.current_song_info = {
+                    'path': first_audio,
+                    'name': filename,
+                    'artists': '本地文件'
+                }
+                self.load_lyrics_for_song(first_audio)
+            except Exception as e:
+                logger.error(f"播放文件失败: {str(e)}")
+                QMessageBox.critical(self, "播放错误", f"无法播放文件:\n{str(e)}")
+        
+            # 将其余文件添加到播放列表
+            for path in audio_files[1:]:
+                self.add_to_playlist(path)
 
 
     def load_lyrics_for_song(self, song_path):
@@ -6413,6 +6447,15 @@ class MusicPlayerApp(QMainWindow):
         self.download_button.setEnabled(False)
         self.download_button.setIcon(QIcon.fromTheme("folder-download"))
         download_layout.addWidget(self.download_button)
+        download_layout.addStretch()
+        info_layout.addLayout(download_layout)
+
+        # +++ 添加播放本地文件按钮 +++
+        self.local_file_button = QPushButton("播放本地文件")
+        self.local_file_button.setIcon(QIcon.fromTheme("folder-music"))
+        self.local_file_button.setToolTip("播放本地音乐文件")
+        download_layout.addWidget(self.local_file_button)
+
         download_layout.addStretch()
         info_layout.addLayout(download_layout)
     
@@ -7901,6 +7944,7 @@ class MusicPlayerApp(QMainWindow):
     def setup_connections(self):
         self.media_player.stateChanged.connect(self.update_button_states)
         self.media_player.positionChanged.connect(self.update_progress)
+        self.local_file_button.clicked.connect(self.play_custom_file)
         self.media_player.stateChanged.connect(self.handle_player_state_changed)
         self.media_player.mediaStatusChanged.connect(self.handle_media_status_changed)
 
