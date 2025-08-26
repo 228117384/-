@@ -12,7 +12,7 @@ class MusicRoomServer:
         self.user_rooms = {}
         self.connections = defaultdict(dict)
         
-    async def handle_connection(self, websocket, path):
+    async def handle_connection(self, websocket):
         """处理客户端连接"""
         user_id = None
         room_id = None
