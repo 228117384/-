@@ -23,8 +23,8 @@ import httpx
 import requests
 import threading
 import numpy as np
-import websockets  # 添加这行
-import uuid        # 添加这行
+import websockets  
+import uuid     
 from flask import Flask, request, jsonify, send_from_directory
 from bs4 import BeautifulSoup
 from PyQt5.QtWebSockets import QWebSocket
@@ -32,7 +32,7 @@ from bilibili_api import Credential, video
 from bilibili_api.video import VideoDownloadURLDataDetecter
 from PIL import Image, ImageDraw, ImageFont
 from PyQt5.QtCore import (
-    QByteArray, QObject, QPoint, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal, QEvent
+    QByteArray, QObject, QPoint, QSettings, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal, QEvent
 )
 from PyQt5.QtGui import (
     QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QImage, 
@@ -1281,7 +1281,7 @@ class LyricsSync(QObject):
         self.current_line_index = -1
         self.enabled = True
         self.word_positions = []  # 存储每个字的开始和结束时间
-        self.karaoke_progress = 0  # 卡拉OK效果的当前进度
+        self.karaoke_progress = 0  # 当前进度
         self.normal_color = QColor("#FFFFFF")  # 白色
         self.highlight_color = QColor("#000000")  # 黑色
         self.next_line_color = QColor("#AAAAAA")  # 灰色
@@ -2251,6 +2251,13 @@ class SettingsDialog(QDialog):
         self.settings = load_settings()
         self.parent = parent
         self.show_translation_check = QCheckBox("显示歌词翻译")
+        # 在设置对话框中添加手机IP配置
+        phone_layout = QHBoxLayout()
+        phone_layout.addWidget(QLabel("手机IP地址:"))
+        self.phone_ip_edit = QLineEdit()
+        self.phone_ip_edit.setPlaceholderText("输入手机IP地址")
+        phone_layout.addWidget(self.phone_ip_edit)
+        QLayout.addLayout(phone_layout)
         self.init_ui()
         self.load_settings()
 
@@ -2642,6 +2649,7 @@ class SettingsDialog(QDialog):
         self.api_key_edit.setText(active_source.get("api_key", ""))
         self.bilibili_cookie_edit.setText(self.settings["bilibili"].get("cookie", ""))
         self.max_duration_spin.setValue(self.settings["bilibili"].get("max_duration", 600))
+        self.phone_ip_edit.setText(QSettings.get("phone_ip", ""))
 
     def save_settings(self):
         self.settings["save_paths"]["music"] = self.music_dir_edit.text()
@@ -2652,6 +2660,7 @@ class SettingsDialog(QDialog):
         self.settings["other"]["auto_play"] = self.auto_play_check.isChecked()
         active_source = self.source_combo.currentText()
         self.settings["sources"]["active_source"] = active_source
+        QSettings["phone_ip"] = self.phone_ip_edit.text()
         
         # 更新API密钥
         for source in self.settings["sources"]["sources_list"]:
@@ -5231,154 +5240,285 @@ class SpeedControl:
         """降低播放速度"""
         self.set_speed(self.current_speed - step)
 
+class PhonePlayer(QObject):
+    """手机播放器控制类"""
+    play_started = pyqtSignal()
+    play_stopped = pyqtSignal()
+    error_occurred = pyqtSignal(str)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.server_ip = self.get_phone_ip()
+        self.is_playing = False
+        self.current_position = 0
+        self.current_song = ""
+        
+    def get_phone_ip(self):
+        """获取手机IP地址（从设置中读取）"""
+        settings = load_settings()
+        return settings.get("phone_ip", "")
+    
+    def play_song(self, file_path, position=0):
+        """发送歌曲到手机并播放"""
+        if not self.server_ip:
+            raise Exception("未配置手机IP地址")
+            
+        # 获取歌曲文件名
+        song_name = os.path.basename(file_path)
+        
+        # 上传歌曲到手机
+        self.upload_song(file_path)
+        
+        # 发送播放命令
+        url = f"http://{self.server_ip}:5000/api/play"
+        data = {
+            "song": song_name,
+            "position": position
+        }
+        
+        response = requests.post(url, json=data)
+        if response.status_code != 200:
+            raise Exception(f"播放命令失败: {response.text}")
+        
+        self.current_song = song_name
+        self.current_position = position
+        self.is_playing = True
+        self.play_started.emit()
+        
+    def upload_song(self, file_path):
+        """上传歌曲到手机"""
+        url = f"http://{self.server_ip}:5000/api/upload"
+        files = {'file': open(file_path, 'rb')}
+        
+        response = requests.post(url, files=files)
+        if response.status_code != 200:
+            raise Exception(f"上传歌曲失败: {response.text}")
+    
+    def play(self):
+        """继续播放"""
+        if not self.is_playing:
+            return
+            
+        url = f"http://{self.server_ip}:5000/api/play"
+        response = requests.post(url)
+        if response.status_code != 200:
+            raise Exception(f"播放命令失败: {response.text}")
+        
+        self.is_playing = True
+    
+    def pause(self):
+        """暂停播放"""
+        if not self.is_playing:
+            return
+            
+        url = f"http://{self.server_ip}:5000/api/pause"
+        response = requests.post(url)
+        if response.status_code != 200:
+            raise Exception(f"暂停命令失败: {response.text}")
+        
+        self.is_playing = False
+    
+    def stop(self):
+        """停止播放"""
+        url = f"http://{self.server_ip}:5000/api/stop"
+        response = requests.post(url)
+        if response.status_code != 200:
+            raise Exception(f"停止命令失败: {response.text}")
+        
+        self.is_playing = False
+        self.play_stopped.emit()
+    
+    def seek(self, position):
+        """跳转到指定位置"""
+        url = f"http://{self.server_ip}:5000/api/seek"
+        data = {"position": position}
+        response = requests.post(url, json=data)
+        if response.status_code != 200:
+            raise Exception(f"跳转命令失败: {response.text}")
+        
+        self.current_position = position
+    
+    def set_volume(self, volume):
+        """设置音量"""
+        url = f"http://{self.server_ip}:5000/api/volume"
+        data = {"volume": volume}
+        response = requests.post(url, json=data)
+        if response.status_code != 200:
+            raise Exception(f"音量设置失败: {response.text}")
+
+class SwitchDeviceEvent(QEvent):
+    event_type = QEvent.Type(QEvent.registerEventType())
+    
+    def __init__(self, device):
+        super().__init__(SwitchDeviceEvent.event_type)
+        self.device = device
+        
 # =============== 主应用程序 ===============
 class MusicPlayerApp(QMainWindow):
     def __init__(self):
-        super().__init__()
-        self.api = None
-        self.current_song = None
-        self.current_song_info = None
-        self.search_results = []
-        self.settings = load_settings()
-        self.media_player = QMediaPlayer()
-        self.media_player.setNotifyInterval(10)
-        self.current_song_path = None
-        self.log_console = None
-        self.active_threads = []
-        self.tools_menu = None 
-        # 初始化用户系统
-        self.user_manager = UserManager()
-        self.current_user_id = None
+        try:
+            super().__init__()
+            self.api = None
+            self.current_song = None
+            self.current_song_info = None
+            self.search_results = []
+            self.settings = load_settings()
+            self.media_player = QMediaPlayer()
+            self.media_player.setNotifyInterval(10)
+            self.current_song_path = None
+            self.log_console = None
+            self.active_threads = []
+            self.tools_menu = None 
+            # 设备切换
+            self.current_device = "computer"  # 默认电脑播放
+            self.phone_player = None  # 手机播放器
+            self.last_play_position = 0  # 最后播放位置
+            self.was_playing = False  # 切换前是否正在播放
+            # 初始化用户系统
+            self.user_manager = UserManager()
+            self.current_user_id = None
         
-        # 初始化设备同步系统
-        self.sync_server = SyncServer()
-        self.sync_client = SyncClient()
+            # 初始化设备同步系统
+            self.sync_server = SyncServer()
+            self.sync_client = SyncClient()
         
-        # 初始化视频播放器
-        self.video_player = VideoPlayer()
+            # 初始化视频播放器
+            self.video_player = VideoPlayer()
         
-        # 初始化频谱可视化
-        self.spectrum_widget = SpectrumWidget()
+            # 初始化频谱可视化
+            self.spectrum_widget = SpectrumWidget()
         
-        # 初始化速度控制
-        self.speed_control = SpeedControl(self.media_player)
+            # 初始化速度控制
+            self.speed_control = SpeedControl(self.media_player)
         
-        # 连接信号
-        self.setup_signals()
+            # 连接信号
+            self.setup_signals()
    
-        # 设置初始窗口大小
-        self.resize(1280, 900)  
-        self.playlist_manager = PlaylistManager()
-        self.initial_style_sheet = ""
-        # 播放模式（0:顺序播放, 1:随机播放, 2:单曲循环）
-        self.play_mode = 0
-        # 当前播放索引
-        self.current_play_index = -1
-        # 播放列表
-        self.playlist = []
-        self.current_play_index = -1
-        self.is_random_play = False
-        self.repeat_mode = "none"
-        self.create_necessary_dirs()  
-        self.netease_worker = NetEaseWorker()  # 网易云专用worker
-        self.setup_netease_connections()  # 连接网易云信号
-        self.init_ui()
-        self.setup_connections()
-        self.media_player.mediaStatusChanged.connect(self.handle_media_status_changed)
-        logger.info("应用程序启动")
-        self.playlist_file = "playlists.json"
-        self.ensure_playlist_exists()
-        self.load_playlist_on_startup()
-        self.results_list.setAutoFillBackground(True)
-        self.song_info.setAutoFillBackground(True)
-        self.playlist_widget.setAutoFillBackground(True)
-        self.initial_style_sheet = self.styleSheet()
-        # 创建速度控制
-        self.speed_control = SpeedControl(self.media_player)
+            # 设置初始窗口大小
+            self.resize(1280, 900)  
+            self.playlist_manager = PlaylistManager()
+            self.initial_style_sheet = ""
+            # 播放模式（0:顺序播放, 1:随机播放, 2:单曲循环）
+            self.play_mode = 0
+            # 当前播放索引
+            self.current_play_index = -1
+            # 播放列表
+            self.playlist = []
+            self.current_play_index = -1
+            self.is_random_play = False
+            self.repeat_mode = "none"
+            self.create_necessary_dirs()  
+            self.netease_worker = NetEaseWorker()  # 网易云专用worker
+            self.setup_netease_connections()  # 连接网易云信号
+            self.init_ui()
+            self.setup_connections()
+            # 加载设备设置
+            self.load_device_setting()
+            self.media_player.mediaStatusChanged.connect(self.handle_media_status_changed)
+            logger.info("应用程序启动")
+            self.playlist_file = "playlists.json"
+            self.ensure_playlist_exists()
+            self.load_playlist_on_startup()
+            self.results_list.setAutoFillBackground(True)
+            self.song_info.setAutoFillBackground(True)
+            self.playlist_widget.setAutoFillBackground(True)
+            self.initial_style_sheet = self.styleSheet()
+            # 创建速度控制
+            self.speed_control = SpeedControl(self.media_player)
         
-        # 添加速度控制UI
-        self.setup_speed_control_ui()
-        self.room_manager = MusicRoomManager(self)
+            # 添加速度控制UI
+            self.setup_speed_control_ui()
+            self.room_manager = MusicRoomManager(self)
 
-        # 添加音乐室服务器
-        self.music_room_server = None
-        self.server_thread = None
+            # 添加音乐室服务器
+            self.music_room_server = None
+            self.server_thread = None
         
-        # 创建外置歌词窗口
-        self.external_lyrics = ExternalLyricsWindow(self)
-        self.external_lyrics.setWindowTitle("歌词 - Railgun_lover")
+            # 创建外置歌词窗口
+            self.external_lyrics = ExternalLyricsWindow(self)
+            self.external_lyrics.setWindowTitle("歌词 - Railgun_lover")
         
-        # 创建歌词同步对象
-        self.lyrics_sync = LyricsSync(self.media_player, self.external_lyrics)
+            # 创建歌词同步对象
+            self.lyrics_sync = LyricsSync(self.media_player, self.external_lyrics)
         
-        # 连接信号
-        self.media_player.positionChanged.connect(self.lyrics_sync.update_position)
-        self.media_player.mediaStatusChanged.connect(self.handle_media_status_changed)
+            # 连接信号
+            self.media_player.positionChanged.connect(self.lyrics_sync.update_position)
+            self.media_player.mediaStatusChanged.connect(self.handle_media_status_changed)
         
-        # 进度条控制
-        self.progress_slider.sliderMoved.connect(self.seek_position)
+            # 进度条控制
+            self.progress_slider.sliderMoved.connect(self.seek_position)
         
-        # 音量控制
-        self.volume_slider.valueChanged.connect(self.set_volume)
+            # 音量控制
+            self.volume_slider.valueChanged.connect(self.set_volume)
         
-        # 初始化歌词窗口状态
-        self.update_lyrics_visibility()
+            # 初始化歌词窗口状态
+            self.update_lyrics_visibility()
         
-        # 初始化播放列表
-        self.update_current_playlist()
+            # 初始化播放列表
+            self.update_current_playlist()
         
-        # 初始化播放模式
-        self.play_mode_combo.setCurrentIndex(0)
-        self.change_play_mode(0)
+            # 初始化播放模式
+            self.play_mode_combo.setCurrentIndex(0)
+            self.change_play_mode(0)
         
-        # 设置初始音量
-        self.media_player.setVolume(80)
+            # 设置初始音量
+            self.media_player.setVolume(80)
         
-        # 加载背景
-        self.set_background()
+            # 加载背景
+            self.set_background()
         
-        # 初始化状态栏
-        self.status_bar.showMessage("就绪")
+            # 初始化状态栏
+            self.status_bar.showMessage("就绪")
         
-        # 初始化按钮状态
-        self.play_button.setEnabled(False)
-        self.pause_button.setEnabled(False)
-        self.stop_button.setEnabled(False)
-        self.download_button.setEnabled(False)
+            # 初始化按钮状态
+            self.play_button.setEnabled(False)
+            self.pause_button.setEnabled(False)
+            self.stop_button.setEnabled(False)
+            self.download_button.setEnabled(False)
         
-        # 初始化歌词按钮状态
-        self.update_lyrics_button_state()
+            # 初始化歌词按钮状态
+            self.update_lyrics_button_state()
         
-        # 初始化时间显示
-        self.current_time_label.setText("00:00")
-        self.total_time_label.setText("00:00")
+            # 初始化时间显示
+            self.current_time_label.setText("00:00")
+            self.total_time_label.setText("00:00")
         
-        # 初始化进度条
-        self.progress_slider.setValue(0)
+            # 初始化进度条
+            self.progress_slider.setValue(0)
         
-        # 初始化歌词同步
-        self.lyrics_sync.load_lyrics("")
+            # 初始化歌词同步
+            self.lyrics_sync.load_lyrics("")
         
-        # 初始化播放列表
-        self.playlist_widget.setCurrentRow(-1)
+            # 初始化播放列表
+            self.playlist_widget.setCurrentRow(-1)
 
-        # 添加远程控制服务器
-        self.remote_server = self.RemoteControlServer(self, port=5000)
-        self.remote_server.start()
+            # 添加远程控制服务器
+            self.remote_server = self.RemoteControlServer(self, port=5000)
+            self.remote_server.start()
         
-        # 创建二维码按钮
-        self.remote_button = QPushButton("手机遥控")
-        self.remote_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(70, 130, 180, 200);")
-        self.remote_button.clicked.connect(self.show_remote_options)
+            # 创建二维码按钮
+            self.remote_button = QPushButton("手机遥控")
+            self.remote_button.setStyleSheet("padding: 8px; font-size: 14px; background-color: rgba(70, 130, 180, 200);")
+            self.remote_button.clicked.connect(self.show_remote_options)
         
-        # 网络状态检测定时器
-        self.network_timer = QTimer(self)
-        self.network_timer.timeout.connect(self.update_network_status)
-        self.network_timer.start(10000)  # 每10秒检测一次
+            # 网络状态检测定时器
+            self.network_timer = QTimer(self)
+            self.network_timer.timeout.connect(self.update_network_status)
+            self.network_timer.start(10000)  # 每10秒检测一次
         
-        logger.info("应用程序初始化完成")
+            logger.info("应用程序初始化完成")
 
-        self.update_button_states(self.media_player.state())
+            self.update_button_states(self.media_player.state())
+
+        except Exception as e:
+            logging.critical(f"主窗口初始化失败: {str(e)}\n{traceback.format_exc()}")
+            QMessageBox.critical(
+                self, 
+                "致命错误", 
+                f"主窗口初始化失败:\n{str(e)}\n\n程序将退出"
+            )
+            sys.exit(1)
+    
 
     def setup_signals(self):
         # 同步服务器消息
@@ -6159,6 +6299,7 @@ class MusicPlayerApp(QMainWindow):
         self.search_input.setPlaceholderText("输入歌曲名称...")
         self.search_input.setClearButtonEnabled(True)
         self.search_input.setMinimumHeight(36)
+        self.search_input.returnPressed.connect(self.start_search) 
         self.source_combo = QComboBox()
         self.source_combo.addItems(get_source_names())
         self.source_combo.setCurrentText(self.settings["sources"]["active_source"])
@@ -6376,6 +6517,10 @@ class MusicPlayerApp(QMainWindow):
         lyrics_action.triggered.connect(self.toggle_lyrics_window)
         self.more_menu.addAction(lyrics_action)
 
+        qr_action = QAction("生成二维码", self)
+        qr_action.triggered.connect(self.generate_qr_code)
+        self.more_menu.addAction(qr_action)
+
         log_action = QAction("日志控制台", self)
         log_action.triggered.connect(self.open_log_console)
         self.more_menu.addAction(log_action)
@@ -6544,7 +6689,8 @@ class MusicPlayerApp(QMainWindow):
         self.play_mode_combo = QComboBox()
         self.play_mode_combo.addItems(["顺序播放", "随机播放", "单曲循环"])
         self.play_mode_combo.setFixedWidth(120)
-    
+        self.play_mode_combo.currentIndexChanged.connect(self.change_play_mode)
+
         clear_button = QPushButton("清空")
         clear_button.setIcon(QIcon.fromTheme("edit-clear"))
     
@@ -6643,6 +6789,49 @@ class MusicPlayerApp(QMainWindow):
         self.results_list.itemClicked.connect(self.song_selected)
         self.playlist_widget.itemDoubleClicked.connect(self.play_playlist_item)
         self.set_background()
+        # 设备切换按钮
+        device_layout = QHBoxLayout()
+        device_layout.addWidget(QLabel("播放设备:"))
+
+        self.device_computer = QPushButton("电脑")
+        self.device_computer.setCheckable(True)
+        self.device_computer.setChecked(True)
+        self.device_computer.setObjectName("deviceComputer")
+        self.device_computer.setStyleSheet("""
+            QPushButton {
+                padding: 6px;
+                background-color: #3a5a98;
+                color: white;
+                border-radius: 4px;
+            }
+            QPushButton:checked {
+                background-color: #1e3a68;
+            }
+        """)
+        self.device_computer.clicked.connect(lambda: self.switch_playback_device("computer"))
+
+        self.device_phone = QPushButton("手机")
+        self.device_phone.setCheckable(True)
+        self.device_phone.setObjectName("devicePhone")
+        self.device_phone.setStyleSheet("""
+            QPushButton {
+                padding: 6px;
+                background-color: #4a7a4a;
+                color: white;
+                border-radius: 4px;
+            }
+            QPushButton:checked {
+                background-color: #2a5a2a;
+            }
+        """)
+        self.device_phone.clicked.connect(lambda: self.switch_playback_device("phone"))
+
+        device_layout.addWidget(self.device_computer)
+        device_layout.addWidget(self.device_phone)
+        device_layout.addStretch()
+
+        # 添加到控制面板
+        control_layout.addLayout(device_layout)
 
     def toggle_sync_server(self):
         """切换设备同步服务器状态"""
@@ -6746,6 +6935,105 @@ class MusicPlayerApp(QMainWindow):
             "<p>项目开源地址: <a href='https://github.com/MISAKAMIYO/Music_Player'>GitHub</a></p>"
         )
         QMessageBox.about(self, "关于", about_text)
+
+    def generate_qr_code(self):
+        """生成二维码对话框"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("生成二维码")
+        dialog.setGeometry(300, 300, 400, 400)
+        layout = QVBoxLayout()
+        
+        # 输入区域
+        input_layout = QHBoxLayout()
+        input_layout.addWidget(QLabel("内容:"))
+        self.qr_content_edit = QLineEdit()
+        self.qr_content_edit.setPlaceholderText("输入要编码的内容...")
+        input_layout.addWidget(self.qr_content)
+        layout.addLayout(input_layout)
+        
+        # 预览区域
+        qr_preview = QLabel()
+        qr_preview.setAlignment(Qt.AlignCenter)
+        qr_preview.setMinimumHeight(300)
+        qr_preview.setStyleSheet("background-color: white; border: 1px solid #ddd;")
+        layout.addWidget(qr_preview)
+        
+        # 按钮区域
+        button_layout = QHBoxLayout()
+        generate_btn = QPushButton("生成")
+        generate_btn.clicked.connect(lambda: self.generate_qr_preview(qr_preview))
+        save_btn = QPushButton("保存")
+        save_btn.clicked.connect(lambda: self.save_qr_code(qr_preview))
+        button_layout.addStretch()
+        button_layout.addWidget(generate_btn)
+        button_layout.addWidget(save_btn)
+        layout.addLayout(button_layout)
+        
+        dialog.setLayout(layout)
+        dialog.exec_()
+        
+    def generate_qr_preview(self, qr_preview):
+        """生成二维码预览"""
+        content = self.qr_content_edit.text().strip()
+        if not content:
+            QMessageBox.warning(self, "提示", "请输入内容")
+            return
+            
+        try:
+            import qrcode
+            from PIL import Image, ImageQt
+            
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=10,
+                border=4,
+            )
+            qr.add_data(content)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+            
+            try:
+                from PIL.ImageQt import ImageQt
+                qimg = ImageQt(img)
+                pixmap = QPixmap.fromImage(qimg)
+            except ImportError:
+                # 方法2: 保存到字节流再加载
+                buffer = io.BytesIO()
+                img.save(buffer, format="PNG")
+                buffer.seek(0)
+                pixmap = QPixmap()
+                pixmap.loadFromData(buffer.getvalue())
+            
+            # 缩放以适应预览区域
+            pixmap = pixmap.scaled(300, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            qr_preview.setPixmap(pixmap)
+            
+        except ImportError:
+            QMessageBox.critical(self, "错误", "需要安装qrcode和Pillow库")
+            return
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"生成二维码失败: {str(e)}")
+    
+    def save_qr_code(self, qr_preview):
+        """保存二维码图片"""
+        if qr_preview.pixmap() is None or qr_preview.pixmap().isNull():
+            QMessageBox.warning(self, "提示", "请先生成二维码")
+            return
+            
+        settings = load_settings()
+        cache_dir = settings["save_paths"]["cache"]
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "保存二维码", 
+            os.path.join(cache_dir, "qrcode.png"), 
+            "PNG图片 (*.png)"
+        )
+        
+        if file_path:
+            pixmap = self.qr_preview.pixmap()
+            pixmap.save(file_path, "PNG")
+            QMessageBox.information(self, "成功", f"二维码已保存到:\n{file_path}")
 
     def open_video_player(self):
         """打开视频播放对话框"""
@@ -7407,6 +7695,11 @@ class MusicPlayerApp(QMainWindow):
             self.current_song_path = song_path
             self.media_player.setMedia(QMediaContent(QUrl.fromLocalFile(song_path)))
             self.media_player.setNotifyInterval(10)
+            settings = load_settings()
+            last_played = settings.get("last_played", {})
+            if last_played.get("path") == song_path:
+                position = last_played.get("position", 0)
+                self.media_player.setPosition(position)
             self.media_player.play()
             
             self.play_button.setEnabled(True)
@@ -7465,11 +7758,20 @@ class MusicPlayerApp(QMainWindow):
         
         if self.play_mode == 2:  # 单曲循环
             return self.current_play_index
-        elif self.play_mode == 1:  # 随机播放
+        if self.play_mode == 1:  # 随机播放
             return random.randint(0, self.playlist_widget.count() - 1)
-        else:  # 顺序播放
-            next_index = self.current_play_index + 1
-            return next_index if next_index < self.playlist_widget.count() else 0
+        # 顺序播放模式 - 直接递增索引
+        next_index = self.current_play_index + 1
+    
+        # 检查是否超出范围
+        if next_index >= self.playlist_widget.count():
+            # 根据设置决定是否循环播放
+            if self.settings["other"]["repeat_mode"] == "all":
+                next_index = 0  # 循环到第一首
+            else:
+                return -1  # 不循环播放
+    
+        return next_index
         
     def get_prev_song_index(self):
         """根据播放模式获取上一首歌曲的索引"""
@@ -7515,9 +7817,31 @@ class MusicPlayerApp(QMainWindow):
             # 播放完成，自动播放下一首
             self.play_next()
 
+    def save_play_position(self):
+        """保存当前播放位置"""
+        if self.current_song_path:
+            # 获取当前播放位置
+            position = self.media_player.position()
+            
+            # 更新当前歌曲的播放位置
+            if hasattr(self, 'current_song_info'):
+                self.current_song_info['last_position'] = position
+                
+            # 保存到设置
+            settings = load_settings()
+            settings["last_played"] = {
+                "path": self.current_song_path,
+                "position": position
+            }
+            save_settings(settings)
+            logger.info(f"保存播放位置: {position}ms")
+
     def change_play_mode(self, index):
         """更改播放模式"""
         self.play_mode = index
+        settings = load_settings()
+        settings["other"]["playback_mode"] = ["list", "random", "single"][index]
+        save_settings(settings)
         modes = ["顺序播放", "随机播放", "单曲循环"]
         self.status_bar.showMessage(f"播放模式已切换为: {modes[index]}")
         logger.info(f"播放模式切换: {modes[index]}")
@@ -7675,6 +7999,9 @@ class MusicPlayerApp(QMainWindow):
         # 保存歌词窗口位置
         settings = load_settings()
         lyrics_settings = settings.get("external_lyrics", {})
+
+        # 保存当前播放位置
+        self.save_play_position()
     
         # 使用QByteArray保存几何信息
         lyrics_settings["geometry"] = self.saveGeometry().toHex().data().decode()
@@ -7728,7 +8055,7 @@ class MusicPlayerApp(QMainWindow):
         if self.music_room_server and self.music_room_server.is_running():
             self.stop_music_room_server()
         
-        # 关闭日志控制台（如果存在）
+        # 关闭日志控制台
         if hasattr(self, 'log_console') and self.log_console:
             self.log_console.close()
      
@@ -7942,6 +8269,8 @@ class MusicPlayerApp(QMainWindow):
             QMessageBox.information(self, "设置", "设置已保存！")
         
     def setup_connections(self):
+        self.device_computer.clicked.connect(lambda: self.switch_playback_device("computer"))
+        self.device_phone.clicked.connect(lambda: self.switch_playback_device("phone"))
         self.media_player.stateChanged.connect(self.update_button_states)
         self.media_player.positionChanged.connect(self.update_progress)
         self.local_file_button.clicked.connect(self.play_custom_file)
@@ -7967,6 +8296,11 @@ class MusicPlayerApp(QMainWindow):
 
     def start_search(self):
         keyword = self.search_input.text().strip()
+        self.status_bar.showMessage("搜索中...")
+        if not keyword:
+            self.status_bar.showMessage("请输入歌曲名称")
+            logger.warning("搜索请求: 未输入关键词")
+            return
         if self.source_combo.currentText() == "网易云音乐":
             self.status_bar.showMessage("网易云搜索中...")
             self.netease_worker.search_songs(keyword)
@@ -8282,11 +8616,13 @@ class MusicPlayerApp(QMainWindow):
             self.media_player.pause()
             self.play_status.setText("已暂停")
             self.status_bar.showMessage("已暂停")
+            self.save_play_position() 
 
     def stop_song(self):
         self.media_player.stop()
         self.play_status.setText("已停止")
         self.status_bar.showMessage("已停止")
+        self.save_play_position() 
 
     @staticmethod
     def format_time(duration_ms):
@@ -8375,6 +8711,88 @@ class MusicPlayerApp(QMainWindow):
                 self.logger.info(f"播放文件: {file_path}")
                 self.post_event(PlayFileEvent(file_path))
                 return jsonify(status="success", message=f"正在播放: {file_path}")
+            
+            @self.app.route('/api/switch-device', methods=['POST'])
+            def switch_device():
+                data = request.json
+                device = data.get('device', 'computer')
+                self.logger.info(f"切换设备: {device}")
+                self.main_window.post_event(SwitchDeviceEvent(device))
+                return jsonify(status="success", message=f"已切换到{device}播放")
+
+            @self.app.route('/api/search', methods=['GET'])
+            def search_songs():
+                keyword = request.args.get('keyword', '')
+                self.logger.info(f"搜索歌曲: {keyword}")
+                results = self.main_window.search_songs_remote(keyword)
+                return jsonify(results)
+
+            @self.app.route('/api/download', methods=['POST'])
+            def download_song():
+                data = request.json
+                song_id = data.get('id')
+                url = data.get('url')
+                self.logger.info(f"下载歌曲: {song_id or url}")
+                result = self.main_window.download_song_remote(song_id, url)
+                return jsonify(result)
+
+            @self.app.route('/api/playlist', methods=['GET'])
+            def get_playlist():
+                self.logger.info("获取播放列表")
+                return jsonify(self.main_window.get_playlist_for_remote())
+
+            @self.app.route('/api/playlist/add', methods=['POST'])
+            def add_to_playlist():
+                data = request.json
+                song_path = data.get('path')
+                self.logger.info(f"添加到播放列表: {song_path}")
+                self.main_window.add_to_playlist_remote(song_path)
+                return jsonify(status="success", message="已添加到播放列表")
+
+            @self.app.route('/api/playlist/remove', methods=['POST'])
+            def remove_from_playlist():
+                data = request.json
+                index = data.get('index')
+                self.logger.info(f"从播放列表移除: {index}")
+                self.main_window.remove_from_playlist_remote(index)
+                return jsonify(status="success", message="已从播放列表移除")
+
+            @self.app.route('/api/sleep-timer', methods=['POST'])
+            def set_sleep_timer():
+                data = request.json
+                minutes = data.get('minutes', 30)
+                self.logger.info(f"设置睡眠定时器: {minutes}分钟")
+                self.main_window.set_sleep_timer(minutes)
+                return jsonify(status="success", message=f"已设置{minutes}分钟后停止播放")
+
+            @self.app.route('/api/equalizer', methods=['POST'])
+            def set_equalizer():
+                data = request.json
+                preset = data.get('preset', 'default')
+                self.logger.info(f"设置均衡器预设: {preset}")
+                self.main_window.set_equalizer_preset(preset)
+                return jsonify(status="success", message=f"已应用{preset}预设")
+
+            @self.app.route('/api/lyrics/show', methods=['POST'])
+            def show_lyrics():
+                self.logger.info("显示歌词")
+                self.main_window.toggle_lyrics_window(True)
+                return jsonify(status="success", message="歌词已显示")
+
+            @self.app.route('/api/lyrics/hide', methods=['POST'])
+            def hide_lyrics():
+                self.logger.info("隐藏歌词")
+                self.main_window.toggle_lyrics_window(False)
+                return jsonify(status="success", message="歌词已隐藏")
+
+            @self.app.route('/api/remote/status', methods=['GET'])
+            def get_remote_status():
+                self.logger.info("获取远程控制状态")
+                return jsonify({
+                    "ip_address": self.main_window.get_ip_address(),
+                    "port": self.port,
+                    "status": "running" if self.running else "stopped"
+                })
 
             # 遥控界面
             @self.app.route('/')
@@ -8450,6 +8868,10 @@ class MusicPlayerApp(QMainWindow):
                 "status": "未知"
             }
     
+    def post_event(self, event):
+        """向主线程发送事件"""
+        QApplication.postEvent(self, event)
+    
     def event(self, event):
         """处理自定义事件"""
         try:
@@ -8467,6 +8889,8 @@ class MusicPlayerApp(QMainWindow):
                 self.play_previous()
             elif isinstance(event, PlayFileEvent):
                 self.play_file_remote(event.file_path)
+            elif isinstance(event, SwitchDeviceEvent):
+                self.switch_playback_device(event.device)
             return super().event(event)
         except KeyboardInterrupt:
             # 优雅地处理键盘中断
@@ -8490,6 +8914,64 @@ class MusicPlayerApp(QMainWindow):
         }
         return status
     
+    def get_file_browser_content(self, path):
+        """获取文件浏览器内容"""
+        return {
+            "current_path": path,
+            "files": self.list_directory(path)
+        }
+
+    def list_directory(self, path):
+        """列出目录内容"""
+        if not os.path.exists(path):
+            return []
+            
+        items = []
+        for entry in os.listdir(path):
+            full_path = os.path.join(path, entry)
+            if os.path.isdir(full_path):
+                items.append({
+                    "name": entry,
+                    "type": "directory",
+                    "path": full_path
+                })
+            elif entry.lower().endswith(('.mp3', '.wav', '.flac', '.m4a')):
+                items.append({
+                    "name": entry,
+                    "type": "file",
+                    "path": full_path
+                })
+        return items
+
+    def search_songs_remote(self, keyword):
+        """远程搜索歌曲"""
+        self.search_input.setText(keyword)
+        self.start_search()
+        # 等待搜索完成
+        time.sleep(1)
+        return {
+            "results": self.search_results,
+            "count": len(self.search_results)
+        }
+
+    def download_song_remote(self, song_id, url):
+        """远程下载歌曲"""
+        if song_id:
+            # 根据ID找到歌曲
+            song = next((s for s in self.search_results if s.get('id') == song_id), None)
+        elif url:
+            # 根据URL找到歌曲
+            song = next((s for s in self.search_results if s.get('url') == url), None)
+        else:
+            return {"status": "error", "message": "缺少歌曲ID或URL"}
+            
+        if not song:
+            return {"status": "error", "message": "未找到歌曲"}
+            
+        self.current_song = song
+        self.download_current_song()
+        return {"status": "success", "message": "开始下载歌曲"}
+    
     def get_playlist_for_remote(self):
         """获取播放列表（简化版）"""
         playlist = []
@@ -8500,6 +8982,66 @@ class MusicPlayerApp(QMainWindow):
                 "path": item.data(Qt.UserRole)
             })
         return playlist
+    
+    def add_to_playlist_remote(self, song_path):
+        """远程添加到播放列表"""
+        if os.path.exists(song_path):
+            song_name = os.path.basename(song_path)
+            item = QListWidgetItem(song_name)
+            item.setData(Qt.UserRole, song_path)
+            self.playlist_widget.addItem(item)
+            return True
+        return False
+    
+    def remove_from_playlist_remote(self, index):
+        """从播放列表移除歌曲"""
+        if 0 <= index < self.playlist_widget.count():
+            self.playlist_widget.takeItem(index)
+            return True
+        return False
+
+    def set_sleep_timer(self, minutes):
+        """设置睡眠定时器"""
+        self.sleep_timer_minutes = minutes
+        self.sleep_timer_start = time.time()
+
+    def set_equalizer_preset(self, preset):
+        """设置均衡器预设"""
+        # 这里需要实现均衡器预设应用逻辑
+        pass
+
+    def toggle_lyrics_window(self, show):
+        """切换歌词窗口显示状态"""
+        if show:
+            self.external_lyrics.show()
+        else:
+            self.external_lyrics.hide()
+
+    def get_network_info(self):
+        """获取网络信息"""
+        try:
+            hostname = socket.gethostname()
+            ip = socket.gethostbyname(hostname)
+            return {
+                "ip_address": ip,
+                "status": "connected"
+            }
+        except:
+            return {
+                "ip_address": "未知",
+                "status": "disconnected"
+            }
+
+    def get_ip_address(self):
+        """获取本机IP地址"""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.0.0.0", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except:
+            return "127.0.0.1"
     
     def play_file_remote(self, file_path):
         """远程播放文件"""
@@ -8517,6 +9059,134 @@ class MusicPlayerApp(QMainWindow):
             logger.info(f"播放文件: {file_path}")
             return True
         return False
+    
+    def switch_playback_device(self, device):
+        """切换播放设备"""
+        if device == self.current_device:
+            return  # 已经是目标设备，无需切换
+    
+        logger.info(f"切换播放设备: {self.current_device} -> {device}")
+    
+        if device == "computer":
+            # 切换到电脑播放
+            self.switch_to_computer_playback()
+        elif device == "phone":
+            # 切换到手机播放
+            self.switch_to_phone_playback()
+        else:
+            logger.warning(f"未知设备类型: {device}")
+            return
+    
+        # 更新当前设备状态
+        self.current_device = device
+    
+        # 更新UI
+        self.update_device_ui()
+    
+        # 保存设置
+        self.save_device_setting(device)
+
+    def switch_to_computer_playback(self):
+        """切换到电脑播放"""
+        logger.info("切换到电脑播放")
+    
+        # 停止手机播放（如果正在播放）
+        if self.phone_player and self.phone_player.is_playing():
+            self.phone_player.stop()
+    
+        # 恢复电脑播放状态
+        if self.current_song_path:
+            self.media_player.setMedia(QMediaContent(QUrl.fromLocalFile(self.current_song_path)))
+        
+            # 恢复播放位置
+            if self.last_play_position > 0:
+                self.media_player.setPosition(self.last_play_position)
+        
+            # 恢复播放状态
+            if self.was_playing:
+                self.media_player.play()
+    
+        # 更新状态栏
+        self.status_bar.showMessage("已切换到电脑播放")
+
+    def switch_to_phone_playback(self):
+        """切换到手机播放"""
+        logger.info("切换到手机播放")
+    
+        # 保存电脑播放状态
+        self.was_playing = self.media_player.state() == QMediaPlayer.PlayingState
+        self.last_play_position = self.media_player.position()
+    
+        # 停止电脑播放
+        self.media_player.stop()
+    
+        # 初始化手机播放器（如果尚未初始化）
+        if self.phone_player is None:
+            self.phone_player = PhonePlayer(self)
+    
+        # 发送当前歌曲到手机
+        if self.current_song_path:
+            # 检查文件是否存在
+            if not os.path.exists(self.current_song_path):
+                logger.error(f"歌曲文件不存在: {self.current_song_path}")
+                QMessageBox.warning(self, "错误", "歌曲文件不存在")
+                return
+            
+            # 发送歌曲到手机
+            try:
+                self.phone_player.play_song(self.current_song_path, self.last_play_position)
+            
+                # 恢复播放状态
+                if self.was_playing:
+                    self.phone_player.play()
+            except Exception as e:
+                logger.error(f"发送歌曲到手机失败: {str(e)}")
+                QMessageBox.critical(self, "错误", f"无法发送歌曲到手机:\n{str(e)}")
+    
+        # 更新状态栏
+        self.status_bar.showMessage("已切换到手机播放")
+
+    def update_device_ui(self):
+        """更新设备切换UI状态"""
+        # 更新设备按钮状态
+        self.device_computer.setChecked(self.current_device == "computer")
+        self.device_phone.setChecked(self.current_device == "phone")
+    
+        # 更新播放控制按钮状态
+        is_computer = self.current_device == "computer"
+        self.play_button.setEnabled(is_computer)
+        self.pause_button.setEnabled(is_computer)
+        self.stop_button.setEnabled(is_computer)
+        self.prev_button.setEnabled(is_computer)
+        self.next_button.setEnabled(is_computer)
+    
+        # 更新进度条状态
+        self.progress_slider.setEnabled(is_computer)
+    
+        # 更新音量控制状态
+        self.volume_slider.setEnabled(is_computer)
+    
+        # 更新手机控制按钮
+        if hasattr(self, 'phone_control_button'):
+            self.phone_control_button.setEnabled(not is_computer)
+
+    def save_device_setting(self, device):
+        """保存设备设置"""
+        settings = load_settings()
+        settings["playback_device"] = device
+        save_settings(settings)
+    
+        logger.info(f"保存播放设备设置: {device}")
+
+    def load_device_setting(self):
+        """加载设备设置"""
+        settings = load_settings()
+        self.current_device = settings.get("playback_device", "computer")
+    
+        # 更新UI
+        self.update_device_ui()
+    
+        logger.info(f"加载播放设备设置: {self.current_device}")
     
     def get_files(self, path):
         """获取指定路径下的文件列表"""
@@ -8539,17 +9209,6 @@ class MusicPlayerApp(QMainWindow):
                     "size": os.path.getsize(full_path)
                 })
         return {"path": path, "files": files}
-    
-    def get_ip_address(self):
-        """获取本机IP地址"""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except Exception:
-            return "127.0.0.1"
     
     def update_network_status(self):
         """更新网络状态显示"""
@@ -8620,9 +9279,15 @@ class MusicPlayerApp(QMainWindow):
             qr.add_data(url)
             qr.make(fit=True)
             img = qr.make_image(fill_color="black", back_color="white")
-            
-            # 转换为QPixmap
-            qimg = ImageQt.toqimage(img)
+
+             # 将PIL图像转换为QImage
+            if img.mode == "RGB":
+                qimg = QImage(img.tobytes(), img.width, img.height, QImage.Format_RGB888)
+            else:
+                # 如果不是RGB模式，先转换为RGB
+                img = img.convert("RGB")
+                qimg = QImage(img.tobytes(), img.width, img.height, QImage.Format_RGB888)
+        
             pixmap = QPixmap.fromImage(qimg)
             
             # 显示对话框
@@ -8961,11 +9626,21 @@ def draw_lyrics(
 
 # =============== 主程序入口 ===============
 if __name__ == "__main__":
-    os.environ["QT_MULTIMEDIA_PREFERRED_PLUGINS"] = "windowsmediafoundation"
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion")
-    font = QFont("Microsoft YaHei", 10)
-    app.setFont(font)
-    window = MusicPlayerApp()
-    window.show()
-    sys.exit(app.exec_())
+    try:
+        os.environ["QT_MULTIMEDIA_PREFERRED_PLUGINS"] = "windowsmediafoundation"
+        app = QApplication(sys.argv)
+        app.setStyle("Fusion")
+        font = QFont("Microsoft YaHei", 10)
+        app.setFont(font)
+        window = MusicPlayerApp()
+        window.show()
+        ret = app.exec_()
+        sys.exit(ret)
+    except Exception as e:
+        logging.critical(f"程序启动失败: {str(e)}\n{traceback.format_exc()}")
+        QMessageBox.critical(
+            None, 
+            "致命错误", 
+            f"程序启动失败:\n{str(e)}\n\n详细信息已记录到日志文件"
+        )
+        sys.exit(1)
